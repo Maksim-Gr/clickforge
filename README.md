@@ -45,11 +45,12 @@ schemamaker <COMMAND> [OPTIONS] <INPUT>
 
 ### Commands
 
-| Command | Description |
-|---------|-------------|
-| `kafka` | Generate full Kafka→ClickHouse pipeline migrations (streams, raw, datalake) |
-| `scan`  | Scan JSON fields and suggest suitable ClickHouse table engines |
-| `table` | Generate a simple `CREATE TABLE` migration from JSON |
+| Command   | Description |
+|-----------|-------------|
+| `kafka`   | Generate full Kafka→ClickHouse pipeline migrations (streams, raw, datalake) |
+| `scan`    | Scan JSON fields and suggest suitable ClickHouse table engines |
+| `table`   | Generate a simple `CREATE TABLE` migration from JSON |
+| `explain` | Explain index utilization for a SQL query against a live ClickHouse |
 
 ---
 
@@ -153,6 +154,54 @@ schemamaker table video_events.json --engine ReplicatedMergeTree -c my_cluster
 # Override ORDER BY
 schemamaker table video_events.json --engine MergeTree --order-by user_id,event_time
 ```
+
+---
+
+### `explain`
+
+Runs `EXPLAIN indexes = 1` against a live ClickHouse instance and prints both the raw plan and a parsed summary showing how many parts and granules each index scans.
+
+```bash
+schemamaker explain [OPTIONS] [SQL]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `[SQL]` | — | SQL query to explain (mutually exclusive with `--file`) |
+| `--file <FILE>` | — | Read SQL from a file instead of an inline argument |
+| `--host <HOST>` | `localhost` | ClickHouse host |
+| `--port <PORT>` | `8123` | ClickHouse HTTP port |
+| `--user <USER>` | `default` | ClickHouse user |
+| `--password <PASSWORD>` | — | ClickHouse password |
+| `--database <DATABASE>` | `default` | ClickHouse database |
+
+```bash
+schemamaker explain "SELECT * FROM events WHERE user_id = 123"
+schemamaker explain --file query.sql --host ch.prod --database analytics
+```
+
+Example output:
+```
+Expression ((Projection + Before ORDER BY))
+  Filter (WHERE)
+    ReadFromMergeTree (events)
+    Indexes:
+      PrimaryKey
+        Keys:
+          user_id
+        Condition: (user_id in [123, 123])
+        Parts: 3/10
+        Granules: 5/1000
+
+--- Index Analysis ---
+PrimaryKey
+  Condition : (user_id in [123, 123])
+  Parts     : 3 / 10  (30.0%)
+  Granules  : 5 / 1000  (0.5%)
+  Verdict   : index effective
+```
+
+Verdict thresholds: `index effective` < 10% granules scanned, `partial scan` 10–50%, `full scan` > 50%.
 
 ---
 
