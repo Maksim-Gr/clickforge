@@ -88,3 +88,21 @@ pub struct EngineConfig {
     pub order_by: Vec<String>,
     pub sum_columns: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_from_str_valid() {
+        assert_eq!(
+            "MergeTree".parse::<TableEngine>().unwrap(),
+            TableEngine::MergeTree
+        )
+    }
+
+    #[test]
+    fn engine_from_str_invalid() {
+        assert!("InvalidEngine".parse::<TableEngine>().is_err())
+    }
+}
