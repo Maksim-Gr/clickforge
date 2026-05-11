@@ -270,14 +270,12 @@ If the same field appears as `Int64` in one record and `Float64` in another, it 
 
 A field is non-nullable only if it is present in every record. Field order in the output matches the first record that introduced each field.
 
-## Recording demos
+<!--
+GIFs are recorded with VHS. Tape files live in docs/.
 
-GIFs are recorded with [VHS](https://github.com/charmbracelet/vhs). Tape files live in `docs/`.
-
-```bash
-brew install vhs        # macOS
-vhs docs/kafka.tape     # produces docs/kafka.gif
-vhs docs/scan.tape
-vhs docs/table.tape
-vhs docs/explain.tape
-```
+  brew install vhs        # macOS
+  vhs docs/kafka.tape     # produces docs/kafka.gif
+  vhs docs/scan.tape
+  vhs docs/table.tape
+  vhs docs/explain.tape
+-->
