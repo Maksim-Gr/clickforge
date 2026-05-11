@@ -111,16 +111,16 @@ fn parse_index_summary(output: &str) {
         if let Some(ref mut block) = current {
             if let Some(rest) = trimmed.strip_prefix("Condition: ") {
                 block.condition = Some(rest.to_string());
-            } else if let Some(rest) = trimmed.strip_prefix("Parts: ") {
-                if let Some((a, b)) = rest.split_once('/') {
-                    block.parts_read = a.trim().parse().ok();
-                    block.parts_total = b.trim().parse().ok();
-                }
-            } else if let Some(rest) = trimmed.strip_prefix("Granules: ") {
-                if let Some((a, b)) = rest.split_once('/') {
-                    block.granules_read = a.trim().parse().ok();
-                    block.granules_total = b.trim().parse().ok();
-                }
+            } else if let Some(rest) = trimmed.strip_prefix("Parts: ")
+                && let Some((a, b)) = rest.split_once('/')
+            {
+                block.parts_read = a.trim().parse().ok();
+                block.parts_total = b.trim().parse().ok();
+            } else if let Some(rest) = trimmed.strip_prefix("Granules: ")
+                && let Some((a, b)) = rest.split_once('/')
+            {
+                block.granules_read = a.trim().parse().ok();
+                block.granules_total = b.trim().parse().ok();
             }
         }
     }
