@@ -92,7 +92,8 @@ fn parse_index_summary(output: &str) {
             continue;
         }
 
-        if index_types.contains(&trimmed) || (trimmed.starts_with("Skip") && !trimmed.contains(':')) {
+        if index_types.contains(&trimmed) || (trimmed.starts_with("Skip") && !trimmed.contains(':'))
+        {
             if let Some(block) = current.take() {
                 blocks.push(block);
             }
@@ -139,11 +140,19 @@ fn parse_index_summary(output: &str) {
             println!("  Condition : {}", cond);
         }
         if let (Some(r), Some(t)) = (block.parts_read, block.parts_total) {
-            let pct = if t > 0 { r as f64 / t as f64 * 100.0 } else { 0.0 };
+            let pct = if t > 0 {
+                r as f64 / t as f64 * 100.0
+            } else {
+                0.0
+            };
             println!("  Parts     : {} / {}  ({:.1}%)", r, t, pct);
         }
         if let (Some(r), Some(t)) = (block.granules_read, block.granules_total) {
-            let pct = if t > 0 { r as f64 / t as f64 * 100.0 } else { 0.0 };
+            let pct = if t > 0 {
+                r as f64 / t as f64 * 100.0
+            } else {
+                0.0
+            };
             let verdict = if pct < 10.0 {
                 "index effective"
             } else if pct <= 50.0 {
