@@ -73,7 +73,6 @@ schemamaker kafka video_events.json
 schemamaker kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/
 ```
 
-![kafka demo](docs/kafka.gif)
 
 ---
 
@@ -127,7 +126,6 @@ Run with chosen engine:
   schemamaker table video_events.json --engine SummingMergeTree
 ```
 
-![scan demo](docs/scan.gif)
 
 ---
 
@@ -162,7 +160,6 @@ schemamaker table video_events.json --engine ReplicatedMergeTree -c my_cluster
 schemamaker table video_events.json --engine MergeTree --order-by user_id,event_time
 ```
 
-![table demo](docs/table.gif)
 
 ---
 
@@ -213,7 +210,6 @@ PrimaryKey
 
 Verdict thresholds: `index effective` < 10% granules scanned, `partial scan` 10–50%, `full scan` > 50%.
 
-![explain demo](docs/explain.gif)
 
 ---
 
@@ -273,15 +269,3 @@ Types are inferred by scanning every record and widening as needed:
 If the same field appears as `Int64` in one record and `Float64` in another, it widens to `Nullable(Float64)`. Any other type conflict widens to `Nullable(String)`.
 
 A field is non-nullable only if it is present in every record. Field order in the output matches the first record that introduced each field.
-
-## Recording demos
-
-GIFs are recorded with [VHS](https://github.com/charmbracelet/vhs). Tape files live in `docs/`.
-
-```bash
-brew install vhs        # macOS
-vhs docs/kafka.tape     # produces docs/kafka.gif
-vhs docs/scan.tape
-vhs docs/table.tape
-vhs docs/explain.tape
-```
