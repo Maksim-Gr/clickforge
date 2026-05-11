@@ -56,6 +56,7 @@ schemamaker <COMMAND> [OPTIONS] <INPUT>
 
 ### `kafka`
 
+
 ```bash
 schemamaker kafka [OPTIONS] <INPUT>
 ```
@@ -77,6 +78,7 @@ schemamaker kafka video_events.json -n my_table -c my_cluster -k my_kafka -o mig
 ### `scan`
 
 Analyzes JSON fields, classifies them (Timestamp-like, ID-like, Numeric), and prints engine suggestions with `ORDER BY` recommendations.
+
 
 ```bash
 schemamaker scan [OPTIONS] <INPUT>
@@ -129,6 +131,7 @@ Run with chosen engine:
 
 Generates a single `CREATE TABLE` / `DROP TABLE` migration. Use `scan` first to pick the right engine.
 
+
 ```bash
 schemamaker table [OPTIONS] <INPUT>
 ```
@@ -160,6 +163,7 @@ schemamaker table video_events.json --engine MergeTree --order-by user_id,event_
 ### `explain`
 
 Runs `EXPLAIN indexes = 1` against a live ClickHouse instance and prints both the raw plan and a parsed summary showing how many parts and granules each index scans.
+
 
 ```bash
 schemamaker explain [OPTIONS] [SQL]
