@@ -105,3 +105,44 @@ fn merge_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
         _ => ColumnType::String,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_schema_json_array() {
+        let schema = infer_schema(r#"[{"id":1,"name":"alice"}]"#, "users").unwrap();
+        assert_eq!(schema.columns.len(), 2);
+        assert_eq!(schema.columns[0].name, "id");
+        assert_eq!(schema.columns[1].name, "name");
+    }
+
+    #[test]
+    fn infer_schema_ndjson() {
+        let schema = infer_schema("{\"id\":1}\n{\"id\":2}", "t").unwrap();
+        assert_eq!(schema.columns.len(), 1);
+        assert_eq!(schema.columns[0].name, "id");
+    }
+
+    #[test]
+    fn infer_schema_nullable_when_field_missing() {
+        let schema = infer_schema("{\"a\":1}\n{\"b\":2}", "t").unwrap();
+        let a = schema.columns.iter().find(|c| c.name == "a").unwrap();
+        let b = schema.columns.iter().find(|c| c.name == "b").unwrap();
+        assert!(a.nullable);
+        assert!(b.nullable);
+    }
+
+    #[test]
+    fn merge_int_and_float_widens_to_float() {
+        let result = merge_types(&ColumnType::Int64, &ColumnType::Float64);
+        assert_eq!(result, ColumnType::Float64);
+    }
+
+    #[test]
+    fn merge_conflicting_types_widens_to_string() {
+        let result = merge_types(&ColumnType::Bool, &ColumnType::Int64);
+        assert_eq!(result, ColumnType::String);
+    }
+}
