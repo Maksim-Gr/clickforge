@@ -56,7 +56,6 @@ schemamaker <COMMAND> [OPTIONS] <INPUT>
 
 ### `kafka`
 
-
 ```bash
 schemamaker kafka [OPTIONS] <INPUT>
 ```
@@ -73,13 +72,13 @@ schemamaker kafka video_events.json
 schemamaker kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/
 ```
 
+Writes `{name}_up.sql` (creates streams table, raw table, datalake table, raw_mv, streams_mv) and `{name}_down.sql` (drops all 5 in reverse order).
 
 ---
 
 ### `scan`
 
 Analyzes JSON fields, classifies them (Timestamp-like, ID-like, Numeric), and prints engine suggestions with `ORDER BY` recommendations.
-
 
 ```bash
 schemamaker scan [OPTIONS] <INPUT>
@@ -95,35 +94,25 @@ schemamaker scan video_events.json
 schemamaker scan video_events.json -c my_cluster
 ```
 
-Example output:
+Example output (truncated):
 ```
 Field analysis: video_events.json  (4 records, 13 fields)
 
   event_id              String            required → ID-like
-  user_id               Int64             required → ID-like
   event_time            String            required → Timestamp-like
   amount                Float64           nullable → Numeric
-  status                String            nullable
 
 Suggested engines:
 
   1. MergeTree
      ORDER BY (event_time)
-     → general purpose time-series table
 
   2. ReplacingMergeTree
      ORDER BY (event_id, event_time)
-     → deduplicates rows by `event_id` — good for upsert-like data
-
-  3. SummingMergeTree
-     ORDER BY (event_id, event_time)
-     SUM COLUMNS (amount)
-     → pre-aggregates `amount` — good for metrics/counters
+     → deduplicates rows by `event_id`
 
 Run with chosen engine:
   schemamaker table video_events.json --engine MergeTree
-  schemamaker table video_events.json --engine ReplacingMergeTree
-  schemamaker table video_events.json --engine SummingMergeTree
 ```
 
 
@@ -132,7 +121,6 @@ Run with chosen engine:
 ### `table`
 
 Generates a single `CREATE TABLE` / `DROP TABLE` migration. Use `scan` first to pick the right engine.
-
 
 ```bash
 schemamaker table [OPTIONS] <INPUT>
@@ -147,17 +135,8 @@ schemamaker table [OPTIONS] <INPUT>
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
 
 ```bash
-# Auto-infer engine (defaults to MergeTree)
 schemamaker table video_events.json
-
-# Explicit engine
-schemamaker table video_events.json --engine ReplacingMergeTree
-
-# Replicated with cluster
 schemamaker table video_events.json --engine ReplicatedMergeTree -c my_cluster
-
-# Override ORDER BY
-schemamaker table video_events.json --engine MergeTree --order-by user_id,event_time
 ```
 
 
@@ -166,7 +145,6 @@ schemamaker table video_events.json --engine MergeTree --order-by user_id,event_
 ### `explain`
 
 Runs `EXPLAIN indexes = 1` against a live ClickHouse instance and prints both the raw plan and a parsed summary showing how many parts and granules each index scans.
-
 
 ```bash
 schemamaker explain [OPTIONS] [SQL]
@@ -189,27 +167,18 @@ schemamaker explain --file query.sql --host ch.prod --database analytics
 
 Example output:
 ```
-Expression ((Projection + Before ORDER BY))
-  Filter (WHERE)
-    ReadFromMergeTree (events)
-    Indexes:
-      PrimaryKey
-        Keys:
-          user_id
-        Condition: (user_id in [123, 123])
-        Parts: 3/10
-        Granules: 5/1000
+ReadFromMergeTree (events)
+  PrimaryKey  (user_id in [123, 123])
+  Parts: 3/10  Granules: 5/1000
 
 --- Index Analysis ---
 PrimaryKey
-  Condition : (user_id in [123, 123])
   Parts     : 3 / 10  (30.0%)
   Granules  : 5 / 1000  (0.5%)
   Verdict   : index effective
 ```
 
 Verdict thresholds: `index effective` < 10% granules scanned, `partial scan` 10–50%, `full scan` > 50%.
-
 
 ---
 
@@ -220,39 +189,14 @@ Ingesting Kafka events into ClickHouse reliably requires three layers and two ma
 ```
 Kafka topic
     ↓
-streams.{name}          # Kafka engine — ClickHouse reads raw messages from the topic
+streams.{name}     # Kafka engine cursor — holds no data, just reads from the topic
     ↓ (streams_mv)
-raw.{name}              # stores the original message string + Kafka metadata (_key, _offset, _partition, _timestamp_ms, _topic)
+raw.{name}         # durable replay buffer — original message string + Kafka metadata
     ↓ (raw_mv)
-datalake.{name}         # typed, queryable table — each field JSONExtracted from the message
+datalake.{name}    # typed, queryable table — fields JSONExtracted at write time
 ```
 
-**Why keep `raw`?** Kafka messages are consumed once. `raw` acts as a durable replay buffer — if the schema changes or `datalake` needs to be rebuilt, you can re-run the materialized view against the stored messages without re-consuming from Kafka.
-
-**Why `streams` as a separate table?** The Kafka engine table itself holds no data; it is just a cursor into the topic. Separating it from `raw` lets you pause, reset, or replace the consumer without touching stored data.
-
-**Why `datalake` as the final table?** `raw` stores everything as `String` + metadata. `datalake` applies `JSONExtract` to give each field its proper type, making queries fast and ergonomic without re-parsing JSON at query time.
-
-## Output
-
-### `kafka`
-
-Two SQL files are written to the output directory:
-
-**`{name}_up.sql`** — creates 5 objects in order:
-1. `streams.{name}` — Kafka engine table (`message String`)
-2. `raw.{name}` — ReplicatedMergeTree with Kafka metadata columns
-3. `datalake.{name}` — ReplicatedMergeTree with inferred columns + metadata
-4. `raw.{name}_mv` — materialized view that JSONExtracts each column from `raw` → `datalake`
-5. `streams.{name}_mv` — materialized view that moves Kafka messages → `raw`
-
-**`{name}_down.sql`** — drops all 5 objects in reverse dependency order.
-
-### `table`
-
-**`{name}_up.sql`** — single `CREATE TABLE IF NOT EXISTS` statement with the chosen engine, inferred columns, `ORDER BY`, and optional `PARTITION BY` (when the first `ORDER BY` field looks like a timestamp).
-
-**`{name}_down.sql`** — single `DROP TABLE IF EXISTS` statement.
+`raw` exists so you can rebuild `datalake` without re-consuming from Kafka if the schema changes.
 
 ## Type Inference
 
