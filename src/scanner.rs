@@ -70,7 +70,7 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
             let id = is_id(&col.name);
             FieldRole {
                 name: col.name.clone(),
-                ch_type: col.ch_type.as_ch_str(col.nullable).to_string(),
+                ch_type: col.ch_type.as_ch_str(col.nullable),
                 nullable: col.nullable,
                 timestamp: is_timestamp(&col.name),
                 id,

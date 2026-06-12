@@ -4,30 +4,34 @@ pub enum ColumnType {
     Int64,
     Float64,
     Bool,
+    DateTime64,
+    Array(Box<ColumnType>),
+    Map(Box<ColumnType>, Box<ColumnType>),
 }
 
 impl ColumnType {
-    pub fn as_str(&self) -> &'static str {
+    /// The ClickHouse type name, without any `Nullable(...)` wrapper.
+    pub fn as_str(&self) -> String {
         match self {
-            ColumnType::String => "String",
-            ColumnType::Int64 => "Int64",
-            ColumnType::Float64 => "Float64",
-            ColumnType::Bool => "Bool",
+            ColumnType::String => "String".to_string(),
+            ColumnType::Int64 => "Int64".to_string(),
+            ColumnType::Float64 => "Float64".to_string(),
+            ColumnType::Bool => "Bool".to_string(),
+            ColumnType::DateTime64 => "DateTime64(3)".to_string(),
+            // Array/Map elements are kept non-nullable for simplicity.
+            ColumnType::Array(inner) => format!("Array({})", inner.as_str()),
+            ColumnType::Map(key, val) => format!("Map({}, {})", key.as_str(), val.as_str()),
         }
     }
 
-    pub fn as_nullable_str(&self) -> &'static str {
-        match self {
-            ColumnType::String => "Nullable(String)",
-            ColumnType::Int64 => "Nullable(Int64)",
-            ColumnType::Float64 => "Nullable(Float64)",
-            ColumnType::Bool => "Nullable(Bool)",
-        }
+    /// ClickHouse forbids wrapping `Array`/`Map` in `Nullable(...)`.
+    fn nullable_allowed(&self) -> bool {
+        !matches!(self, ColumnType::Array(_) | ColumnType::Map(_, _))
     }
 
-    pub fn as_ch_str(&self, nullable: bool) -> &'static str {
-        if nullable {
-            self.as_nullable_str()
+    pub fn as_ch_str(&self, nullable: bool) -> String {
+        if nullable && self.nullable_allowed() {
+            format!("Nullable({})", self.as_str())
         } else {
             self.as_str()
         }
