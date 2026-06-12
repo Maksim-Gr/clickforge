@@ -2,6 +2,9 @@
 name = "schemamaker"
 version = "0.2.0"
 edition = "2024"
+description = "Generate ClickHouse migration SQL from a JSON file"
+repository = "https://github.com/Maksim-Gr/schemamaker"
+license = "MIT"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

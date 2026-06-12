@@ -6,7 +6,7 @@ use std::path::PathBuf;
     name = "schemamaker",
     about = "Generate ClickHouse migrations from a JSON file",
     long_about = "Generate ClickHouse migrations from a JSON file.\n\nSubcommands:\n  scan     Analyze fields and pick an engine\n  table    Generate a CREATE TABLE migration\n  kafka    Generate a full Kafka→ClickHouse pipeline\n  explain  Explain index usage for a SQL query against a live ClickHouse\n\nTip: start with `schemamaker scan <file.ndjson>` if unsure which engine to use.",
-    version = "0.1.3-beta"
+    version = env!("CARGO_PKG_VERSION")
 )]
 pub struct Cli {
     #[command(subcommand)]
