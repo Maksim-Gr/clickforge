@@ -91,12 +91,6 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
         .map(|f| f.name.as_str())
         .collect();
 
-    let numeric_fields: Vec<&str> = fields
-        .iter()
-        .filter(|f| f.numeric)
-        .map(|f| f.name.as_str())
-        .collect();
-
     let mut suggestions: Vec<EngineSuggestion> = Vec::new();
 
     // 1. MergeTree — always
@@ -131,31 +125,6 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
             engine: TableEngine::ReplacingMergeTree,
             order_by,
             sum_columns: vec![],
-            rationale,
-        });
-    }
-
-    // 3. SummingMergeTree — if numeric fields exist
-    if !numeric_fields.is_empty() {
-        let mut order_by: Vec<String> = id_fields.iter().take(1).map(|s| s.to_string()).collect();
-        if let Some(ts) = timestamp_fields.first() {
-            order_by.push(ts.to_string());
-        }
-        if order_by.is_empty() {
-            order_by = fields
-                .first()
-                .map(|f| vec![f.name.clone()])
-                .unwrap_or_default();
-        }
-        let sum_columns: Vec<String> = numeric_fields.iter().map(|s| s.to_string()).collect();
-        let rationale = format!(
-            "pre-aggregates `{}` — good for metrics/counters",
-            numeric_fields.join(", ")
-        );
-        suggestions.push(EngineSuggestion {
-            engine: TableEngine::SummingMergeTree,
-            order_by,
-            sum_columns,
             rationale,
         });
     }

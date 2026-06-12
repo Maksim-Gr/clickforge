@@ -9,4 +9,3 @@ license = "MIT"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-ureq = "2"
