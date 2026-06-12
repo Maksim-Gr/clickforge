@@ -98,7 +98,7 @@ Example output (truncated):
 Field analysis: video_events.json  (4 records, 13 fields)
 
   event_id              String            required → ID-like
-  event_time            String            required → Timestamp-like
+  event_time            DateTime64(3)     required → Timestamp-like
   amount                Float64           nullable → Numeric
 
 Suggested engines:
@@ -164,10 +164,15 @@ Types are inferred by scanning every record and widening as needed:
 | JSON value | ClickHouse type |
 |------------|-----------------|
 | string | `Nullable(String)` |
+| ISO-8601 datetime string (`YYYY-MM-DDThh:mm:ss…`) | `Nullable(DateTime64(3))` |
 | integer | `Nullable(Int64)` |
 | float | `Nullable(Float64)` |
 | boolean | `Nullable(Bool)` |
-| null / array / object | `Nullable(String)` |
+| array | `Array(T)` — element type inferred |
+| object with scalar values | `Map(String, V)` |
+| null / nested object | `Nullable(String)` |
+
+`Array` and `Map` columns are never wrapped in `Nullable` (ClickHouse forbids it). Date-only strings (`2024-03-01`) are left as `String`.
 
 If the same field appears as `Int64` in one record and `Float64` in another, it widens to `Nullable(Float64)`. Any other type conflict widens to `Nullable(String)`.
 

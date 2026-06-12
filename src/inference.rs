@@ -83,7 +83,13 @@ pub fn record_count(content: &str) -> usize {
 fn infer_type(val: &Value) -> ColumnType {
     match val {
         Value::Bool(_) => ColumnType::Bool,
-        Value::String(_) => ColumnType::String,
+        Value::String(s) => {
+            if looks_like_datetime(s) {
+                ColumnType::DateTime64
+            } else {
+                ColumnType::String
+            }
+        }
         Value::Number(n) => {
             if n.as_i64().is_some() || n.as_u64().is_some() {
                 ColumnType::Int64
@@ -91,9 +97,53 @@ fn infer_type(val: &Value) -> ColumnType {
                 ColumnType::Float64
             }
         }
-        _ => ColumnType::String,
+        Value::Array(items) => {
+            let elem = items
+                .iter()
+                .map(infer_type)
+                .reduce(|a, b| merge_types(&a, &b))
+                .unwrap_or(ColumnType::String);
+            ColumnType::Array(Box::new(elem))
+        }
+        Value::Object(map) => {
+            // Map(String, V) only when every value is a homogeneous scalar; otherwise String.
+            let mut value_type: Option<ColumnType> = None;
+            for v in map.values() {
+                if !v.is_string() && !v.is_number() && !v.is_boolean() {
+                    return ColumnType::String;
+                }
+                let t = infer_type(v);
+                value_type = Some(match value_type {
+                    Some(existing) => merge_types(&existing, &t),
+                    None => t,
+                });
+            }
+            match value_type {
+                Some(vt) => ColumnType::Map(Box::new(ColumnType::String), Box::new(vt)),
+                None => ColumnType::String, // empty object
+            }
+        }
+        Value::Null => ColumnType::String,
     }
 }
+
+/// Conservative ISO-8601 check: matches `YYYY-MM-DDThh:mm:ss` or `YYYY-MM-DD hh:mm:ss`
+/// (optionally followed by fractional seconds / timezone). Date-only strings are left as String.
+fn looks_like_datetime(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 19 {
+        return false;
+    }
+    let digit = |i: usize| b[i].is_ascii_digit();
+    (0..4).all(digit)                          // YYYY
+        && b[4] == b'-' && digit(5) && digit(6)  // -MM
+        && b[7] == b'-' && digit(8) && digit(9)  // -DD
+        && (b[10] == b'T' || b[10] == b' ')      // T or space
+        && digit(11) && digit(12) && b[13] == b':'  // hh:
+        && digit(14) && digit(15) && b[16] == b':'  // mm:
+        && digit(17) && digit(18) // ss
+}
+
 fn merge_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
     if a == b {
         return a.clone();
@@ -101,6 +151,12 @@ fn merge_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
     match (a, b) {
         (ColumnType::Float64, ColumnType::Int64) | (ColumnType::Int64, ColumnType::Float64) => {
             ColumnType::Float64
+        }
+        (ColumnType::Array(x), ColumnType::Array(y)) => {
+            ColumnType::Array(Box::new(merge_types(x, y)))
+        }
+        (ColumnType::Map(_, x), ColumnType::Map(_, y)) => {
+            ColumnType::Map(Box::new(ColumnType::String), Box::new(merge_types(x, y)))
         }
         _ => ColumnType::String,
     }
@@ -144,5 +200,54 @@ mod tests {
     fn merge_conflicting_types_widens_to_string() {
         let result = merge_types(&ColumnType::Bool, &ColumnType::Int64);
         assert_eq!(result, ColumnType::String);
+    }
+
+    #[test]
+    fn infer_iso8601_string_as_datetime() {
+        let schema = infer_schema(r#"[{"ts":"2024-03-01T12:00:00Z"}]"#, "t").unwrap();
+        assert_eq!(schema.columns[0].ch_type, ColumnType::DateTime64);
+    }
+
+    #[test]
+    fn plain_string_is_not_datetime() {
+        let schema = infer_schema(r#"[{"name":"alice"}]"#, "t").unwrap();
+        assert_eq!(schema.columns[0].ch_type, ColumnType::String);
+        // a date-only string stays String (conservative)
+        let d = infer_schema(r#"[{"d":"2024-03-01"}]"#, "t").unwrap();
+        assert_eq!(d.columns[0].ch_type, ColumnType::String);
+    }
+
+    #[test]
+    fn infer_array_element_type() {
+        let schema = infer_schema(r#"[{"tags":["a","b"]}]"#, "t").unwrap();
+        assert_eq!(
+            schema.columns[0].ch_type,
+            ColumnType::Array(Box::new(ColumnType::String))
+        );
+        assert_eq!(schema.columns[0].ch_type.as_ch_str(true), "Array(String)");
+    }
+
+    #[test]
+    fn infer_scalar_object_as_map() {
+        let schema = infer_schema(r#"[{"attrs":{"a":1,"b":2}}]"#, "t").unwrap();
+        assert_eq!(
+            schema.columns[0].ch_type,
+            ColumnType::Map(Box::new(ColumnType::String), Box::new(ColumnType::Int64))
+        );
+    }
+
+    #[test]
+    fn infer_nested_object_falls_back_to_string() {
+        let schema = infer_schema(r#"[{"meta":{"inner":{"x":1}}}]"#, "t").unwrap();
+        assert_eq!(schema.columns[0].ch_type, ColumnType::String);
+    }
+
+    #[test]
+    fn merge_arrays_merges_element_types() {
+        let result = merge_types(
+            &ColumnType::Array(Box::new(ColumnType::Int64)),
+            &ColumnType::Array(Box::new(ColumnType::Float64)),
+        );
+        assert_eq!(result, ColumnType::Array(Box::new(ColumnType::Float64)));
     }
 }
