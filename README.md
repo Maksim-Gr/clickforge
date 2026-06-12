@@ -57,6 +57,7 @@ cat video_events.json | schemamaker table - --name video_events -o migrations/
 | `kafka`   | Generate full Kafka→ClickHouse pipeline migrations (streams, raw, datalake) |
 | `scan`    | Scan JSON fields and suggest suitable ClickHouse table engines |
 | `table`   | Generate a simple `CREATE TABLE` migration from JSON |
+| `diff`    | Generate `ALTER TABLE` migrations from the diff between two JSON samples |
 
 ---
 
@@ -145,6 +146,30 @@ schemamaker table video_events.json
 schemamaker table video_events.json --engine ReplicatedMergeTree -c my_cluster
 ```
 
+
+---
+
+### `diff`
+
+Infers a schema from two JSON samples (an old and a new one) and generates additive `ALTER TABLE` migrations for the columns that appear in the new sample but not the old.
+
+```bash
+schemamaker diff [OPTIONS] <OLD> <NEW>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<OLD>` | — | Existing/old JSON sample (or `-` for stdin) |
+| `<NEW>` | — | New JSON sample (or `-` for stdin) |
+| `-n, --name <NAME>` | new file stem | Override the table name |
+| `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` to the statements |
+| `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
+
+```bash
+schemamaker diff video_events.json video_events_v2.json -n video_events
+```
+
+Writes `{name}_alter_up.sql` (`ADD COLUMN`) and `{name}_alter_down.sql` (`DROP COLUMN`, reverse order). Removed columns and type changes are **not** migrated automatically — they are reported as warnings on stderr so you can review them by hand (dropping or retyping a populated column is destructive).
 
 ---
 
