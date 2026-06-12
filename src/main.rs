@@ -1,4 +1,5 @@
 mod cli;
+mod diff;
 mod generator;
 mod inference;
 mod scanner;
@@ -185,6 +186,33 @@ fn main() {
                 &table_name,
                 &args.output_dir,
             );
+        }
+
+        cli::Commands::Diff(args) => {
+            let table_name = table_name_from(args.name, &args.new);
+            let infer = |content: &str| {
+                inference::infer_schema(content, &table_name).unwrap_or_else(|e| {
+                    eprintln!("Error inferring schema: {}", e);
+                    std::process::exit(1);
+                })
+            };
+            let old_schema = infer(&read_input(&args.old));
+            let new_schema = infer(&read_input(&args.new));
+
+            let result = diff::diff_schemas(&old_schema, &new_schema, args.cluster.as_deref());
+            for w in &result.warnings {
+                eprintln!("Warning: {}", w);
+            }
+            if result.up.is_empty() {
+                eprintln!("No new columns to add.");
+            } else {
+                write_migrations(
+                    result.up,
+                    result.down,
+                    &format!("{}_alter", table_name),
+                    &args.output_dir,
+                );
+            }
         }
     }
 }

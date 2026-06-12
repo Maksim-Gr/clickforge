@@ -21,6 +21,8 @@ pub enum Commands {
     Scan(ScanArgs),
     /// Generate a simple CREATE TABLE migration from JSON
     Table(TableArgs),
+    /// Generate ALTER TABLE migrations from the diff between two JSON samples
+    Diff(DiffArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -36,6 +38,23 @@ pub struct KafkaArgs {
     /// Kafka collection name
     #[arg(short, long, default_value = "kafka")]
     pub kafka: String,
+    /// Output directory for migration files
+    #[arg(short, long, default_value = ".")]
+    pub output_dir: PathBuf,
+}
+
+#[derive(Parser, Debug)]
+pub struct DiffArgs {
+    /// Path to the existing/old JSON sample (or `-` for stdin)
+    pub old: PathBuf,
+    /// Path to the new JSON sample (or `-` for stdin)
+    pub new: PathBuf,
+    /// Override table name (defaults to the new file's stem)
+    #[arg(short, long)]
+    pub name: Option<String>,
+    /// ClickHouse cluster name; adds `ON CLUSTER`
+    #[arg(short, long)]
+    pub cluster: Option<String>,
     /// Output directory for migration files
     #[arg(short, long, default_value = ".")]
     pub output_dir: PathBuf,
