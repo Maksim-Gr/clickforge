@@ -43,6 +43,13 @@ The binary is at `./target/release/schemamaker`.
 schemamaker <COMMAND> [OPTIONS] <INPUT>
 ```
 
+`<INPUT>` is a path to a JSON/NDJSON file, or `-` to read from stdin. When reading from stdin, pass `--name` to set the table name (it defaults to `table`):
+
+```bash
+cat video_events.json | schemamaker scan -
+cat video_events.json | schemamaker table - --name video_events -o migrations/
+```
+
 ### Commands
 
 | Command   | Description |

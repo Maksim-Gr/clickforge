@@ -34,12 +34,35 @@ fn print_schema_summary(schema: &schema::InferredSchema) {
 
 fn table_name_from(name: Option<String>, input: &Path) -> String {
     name.unwrap_or_else(|| {
+        if input.as_os_str() == "-" {
+            eprintln!("Note: reading from stdin; defaulting table name to `table` (pass --name to override).");
+            return "table".to_string();
+        }
         input
             .file_stem()
-            .expect("input file has no stem")
-            .to_string_lossy()
-            .to_string()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| {
+                eprintln!("Error: could not derive a table name from {:?}; pass --name", input);
+                std::process::exit(1);
+            })
     })
+}
+
+/// Reads the input source: stdin when `path` is `-`, otherwise the file at `path`.
+fn read_input(path: &Path) -> String {
+    if path.as_os_str() == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .unwrap_or_else(|e| {
+                eprintln!("Error reading stdin: {}", e);
+                std::process::exit(1);
+            });
+        buf
+    } else {
+        read_file(path)
+    }
 }
 
 fn read_file(path: &Path) -> String {
@@ -72,7 +95,7 @@ fn main() {
     match cli.command {
         cli::Commands::Kafka(args) => {
             let table_name = table_name_from(args.name, &args.input);
-            let content = read_file(&args.input);
+            let content = read_input(&args.input);
             let schema = inference::infer_schema(&content, &table_name).unwrap_or_else(|e| {
                 eprintln!("Error inferring schema: {}", e);
                 std::process::exit(1);
@@ -89,7 +112,7 @@ fn main() {
 
         cli::Commands::Scan(args) => {
             let table_name = table_name_from(args.name, &args.input);
-            let content = read_file(&args.input);
+            let content = read_input(&args.input);
             let schema = inference::infer_schema(&content, &table_name).unwrap_or_else(|e| {
                 eprintln!("Error inferring schema: {}", e);
                 std::process::exit(1);
@@ -102,7 +125,7 @@ fn main() {
 
         cli::Commands::Table(args) => {
             let table_name = table_name_from(args.name, &args.input);
-            let content = read_file(&args.input);
+            let content = read_input(&args.input);
             let schema = inference::infer_schema(&content, &table_name).unwrap_or_else(|e| {
                 eprintln!("Error inferring schema: {}", e);
                 std::process::exit(1);
