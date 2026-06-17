@@ -197,7 +197,11 @@ fn main() {
                 eprintln!("Error: only one of <OLD> and <NEW> can be '-' (stdin).");
                 std::process::exit(1);
             }
-            let name_input = if args.new.as_os_str() != "-" { &args.new } else { &args.old };
+            let name_input = if args.new.as_os_str() != "-" {
+                &args.new
+            } else {
+                &args.old
+            };
             let table_name = table_name_from(args.name, name_input);
             let infer = |content: &str| {
                 inference::infer_schema(content, &table_name).unwrap_or_else(|e| {
@@ -208,8 +212,12 @@ fn main() {
             let old_schema = infer(&read_input(&args.old));
             let new_schema = infer(&read_input(&args.new));
 
-            let result =
-                diff::diff_schemas(&old_schema, &new_schema, &table_name, args.cluster.as_deref());
+            let result = diff::diff_schemas(
+                &old_schema,
+                &new_schema,
+                &table_name,
+                args.cluster.as_deref(),
+            );
             for w in &result.warnings {
                 eprintln!("Warning: {}", w);
             }

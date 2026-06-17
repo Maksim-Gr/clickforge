@@ -120,7 +120,11 @@ mod tests {
         let new = infer_schema(r#"[{"a":1},{"a":2}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", None);
         assert!(d.up.is_empty());
-        assert!(d.warnings.iter().any(|w| w.contains("`a`") && w.contains("changed type")));
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.contains("`a`") && w.contains("changed type"))
+        );
     }
 
     #[test]
