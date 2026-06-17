@@ -120,7 +120,11 @@ fn main() {
             });
             let replicated = args.cluster.is_some();
             let result = scanner::scan(&schema, replicated);
-            let source = args.input.display().to_string();
+            let source = if args.input.as_os_str() == "-" {
+                "<stdin>".to_string()
+            } else {
+                args.input.display().to_string()
+            };
             scanner::print_scan(&result, &source, inference::record_count(&content));
         }
 
@@ -189,7 +193,12 @@ fn main() {
         }
 
         cli::Commands::Diff(args) => {
-            let table_name = table_name_from(args.name, &args.new);
+            if args.old.as_os_str() == "-" && args.new.as_os_str() == "-" {
+                eprintln!("Error: only one of <OLD> and <NEW> can be '-' (stdin).");
+                std::process::exit(1);
+            }
+            let name_input = if args.new.as_os_str() != "-" { &args.new } else { &args.old };
+            let table_name = table_name_from(args.name, name_input);
             let infer = |content: &str| {
                 inference::infer_schema(content, &table_name).unwrap_or_else(|e| {
                     eprintln!("Error inferring schema: {}", e);
@@ -199,12 +208,15 @@ fn main() {
             let old_schema = infer(&read_input(&args.old));
             let new_schema = infer(&read_input(&args.new));
 
-            let result = diff::diff_schemas(&old_schema, &new_schema, args.cluster.as_deref());
+            let result =
+                diff::diff_schemas(&old_schema, &new_schema, &table_name, args.cluster.as_deref());
             for w in &result.warnings {
                 eprintln!("Warning: {}", w);
             }
             if result.up.is_empty() {
-                eprintln!("No new columns to add.");
+                if result.warnings.is_empty() {
+                    eprintln!("No changes detected.");
+                }
             } else {
                 write_migrations(
                     result.up,

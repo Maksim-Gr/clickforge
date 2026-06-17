@@ -12,10 +12,15 @@ pub struct Diff {
 /// Only columns present in `new` but missing from `old` produce `ADD COLUMN` (up) and
 /// `DROP COLUMN` (down). Removed columns and type changes are reported as warnings rather
 /// than emitting destructive `DROP`/`MODIFY` statements.
-pub fn diff_schemas(old: &InferredSchema, new: &InferredSchema, cluster: Option<&str>) -> Diff {
-    let t = &new.table_name;
+pub fn diff_schemas(
+    old: &InferredSchema,
+    new: &InferredSchema,
+    table_name: &str,
+    cluster: Option<&str>,
+) -> Diff {
+    let t = table_name;
     let on_cluster = cluster
-        .map(|c| format!(" ON CLUSTER {c}"))
+        .map(|c| format!(" ON CLUSTER `{c}`"))
         .unwrap_or_default();
 
     let old_by_name: HashMap<&str, &Column> =
@@ -31,15 +36,15 @@ pub fn diff_schemas(old: &InferredSchema, new: &InferredSchema, cluster: Option<
             None => {
                 let ty = col.ch_type.as_ch_str(col.nullable);
                 up_lines.push(format!(
-                    "ALTER TABLE {t}{on_cluster} ADD COLUMN IF NOT EXISTS `{}` {};",
+                    "ALTER TABLE `{t}`{on_cluster} ADD COLUMN IF NOT EXISTS `{}` {};",
                     col.name, ty
                 ));
                 down_lines.push(format!(
-                    "ALTER TABLE {t}{on_cluster} DROP COLUMN IF EXISTS `{}`;",
+                    "ALTER TABLE `{t}`{on_cluster} DROP COLUMN IF EXISTS `{}`;",
                     col.name
                 ));
             }
-            Some(old_col) if old_col.ch_type != col.ch_type => {
+            Some(old_col) if old_col.ch_type != col.ch_type || old_col.nullable != col.nullable => {
                 warnings.push(format!(
                     "column `{}` changed type {} -> {} (no MODIFY emitted; review manually)",
                     col.name,
@@ -79,7 +84,7 @@ mod tests {
     fn added_field_produces_add_and_drop() {
         let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1,"b":"x"}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, None);
+        let d = diff_schemas(&old, &new, "t", None);
         assert!(d.up.contains("ADD COLUMN IF NOT EXISTS `b`"));
         assert!(d.down.contains("DROP COLUMN IF EXISTS `b`"));
         assert!(!d.up.contains("`a`")); // unchanged column untouched
@@ -90,7 +95,7 @@ mod tests {
     fn removed_field_warns_not_dropped() {
         let old = infer_schema(r#"[{"a":1,"b":2}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, None);
+        let d = diff_schemas(&old, &new, "t", None);
         assert!(d.up.is_empty());
         assert!(
             d.warnings
@@ -103,16 +108,26 @@ mod tests {
     fn type_change_warns() {
         let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap(); // Int64
         let new = infer_schema(r#"[{"a":"x"}]"#, "t").unwrap(); // String
-        let d = diff_schemas(&old, &new, None);
+        let d = diff_schemas(&old, &new, "t", None);
         assert!(d.up.is_empty());
         assert!(d.warnings.iter().any(|w| w.contains("changed type")));
+    }
+
+    #[test]
+    fn nullability_change_warns() {
+        // a is nullable in old (absent from one record), non-nullable in new
+        let old = infer_schema("{\"a\":1}\n{}", "t").unwrap();
+        let new = infer_schema(r#"[{"a":1},{"a":2}]"#, "t").unwrap();
+        let d = diff_schemas(&old, &new, "t", None);
+        assert!(d.up.is_empty());
+        assert!(d.warnings.iter().any(|w| w.contains("`a`") && w.contains("changed type")));
     }
 
     #[test]
     fn cluster_adds_on_cluster() {
         let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1,"b":2}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, Some("ck"));
-        assert!(d.up.contains("ON CLUSTER ck"));
+        let d = diff_schemas(&old, &new, "t", Some("ck"));
+        assert!(d.up.contains("ON CLUSTER `ck`"));
     }
 }
