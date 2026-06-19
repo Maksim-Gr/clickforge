@@ -1,32 +1,32 @@
-# schemamaker
+# clickforge
 
 Generate ClickHouse migration SQL from a JSON file. Replaces the `create_ddl_for_kafka.sh` shell script without requiring a ClickHouse binary.
 
 ## Install
 
-Download the binary for your platform from the [v0.3.0 release](https://github.com/Maksim-Gr/schemamaker/releases/tag/v0.3.0).
+Download the binary for your platform from the [v0.4.0 release](https://github.com/Maksim-Gr/clickforge/releases/tag/v0.4.0).
 
 **macOS (Apple Silicon)**
 ```bash
-curl -L https://github.com/Maksim-Gr/schemamaker/releases/download/v0.3.0/schemamaker-macos-arm64.tar.gz | tar -xz
-chmod +x schemamaker && mv schemamaker /usr/local/bin/schemamaker
+curl -L https://github.com/Maksim-Gr/clickforge/releases/download/v0.4.0/clickforge-macos-arm64.tar.gz | tar -xz
+chmod +x clickforge && mv clickforge /usr/local/bin/clickforge
 ```
 
 **macOS (Intel)**
 ```bash
-curl -L https://github.com/Maksim-Gr/schemamaker/releases/download/v0.3.0/schemamaker-macos-x86_64.tar.gz | tar -xz
-chmod +x schemamaker && mv schemamaker /usr/local/bin/schemamaker
+curl -L https://github.com/Maksim-Gr/clickforge/releases/download/v0.4.0/clickforge-macos-x86_64.tar.gz | tar -xz
+chmod +x clickforge && mv clickforge /usr/local/bin/clickforge
 ```
 
 **Linux (x86_64)**
 ```bash
-curl -L https://github.com/Maksim-Gr/schemamaker/releases/download/v0.3.0/schemamaker-linux-x86_64.tar.gz | tar -xz
-chmod +x schemamaker && mv schemamaker /usr/local/bin/schemamaker
+curl -L https://github.com/Maksim-Gr/clickforge/releases/download/v0.4.0/clickforge-linux-x86_64.tar.gz | tar -xz
+chmod +x clickforge && mv clickforge /usr/local/bin/clickforge
 ```
 
 Verify:
 ```bash
-schemamaker --version
+clickforge --version
 ```
 
 ## Build from source
@@ -35,19 +35,19 @@ schemamaker --version
 cargo build --release
 ```
 
-The binary is at `./target/release/schemamaker`.
+The binary is at `./target/release/clickforge`.
 
 ## Usage
 
 ```bash
-schemamaker <COMMAND> [OPTIONS] <INPUT>
+clickforge <COMMAND> [OPTIONS] <INPUT>
 ```
 
 `<INPUT>` is a path to a JSON/NDJSON file, or `-` to read from stdin. When reading from stdin, pass `--name` to set the table name (it defaults to `table`):
 
 ```bash
-cat video_events.json | schemamaker scan -
-cat video_events.json | schemamaker table - --name video_events -o migrations/
+cat video_events.json | clickforge scan -
+cat video_events.json | clickforge table - --name video_events -o migrations/
 ```
 
 ### Commands
@@ -64,7 +64,7 @@ cat video_events.json | schemamaker table - --name video_events -o migrations/
 ### `kafka`
 
 ```bash
-schemamaker kafka [OPTIONS] <INPUT>
+clickforge kafka [OPTIONS] <INPUT>
 ```
 
 | Flag | Default | Description |
@@ -75,8 +75,8 @@ schemamaker kafka [OPTIONS] <INPUT>
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
 
 ```bash
-schemamaker kafka video_events.json
-schemamaker kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/
+clickforge kafka video_events.json
+clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/
 ```
 
 Writes `{name}_up.sql` (creates streams table, raw table, datalake table, raw_mv, streams_mv) and `{name}_down.sql` (drops all 5 in reverse order).
@@ -88,7 +88,7 @@ Writes `{name}_up.sql` (creates streams table, raw table, datalake table, raw_mv
 Analyzes JSON fields, classifies them (Timestamp-like, ID-like, Numeric), and prints engine suggestions with `ORDER BY` recommendations.
 
 ```bash
-schemamaker scan [OPTIONS] <INPUT>
+clickforge scan [OPTIONS] <INPUT>
 ```
 
 | Flag | Default | Description |
@@ -97,8 +97,8 @@ schemamaker scan [OPTIONS] <INPUT>
 | `-c, --cluster <CLUSTER>` | — | If set, suggests `ReplicatedMergeTree` variants |
 
 ```bash
-schemamaker scan video_events.json
-schemamaker scan video_events.json -c my_cluster
+clickforge scan video_events.json
+clickforge scan video_events.json -c my_cluster
 ```
 
 Example output (truncated):
@@ -119,7 +119,7 @@ Suggested engines:
      → deduplicates rows by `event_id`
 
 Run with chosen engine:
-  schemamaker table video_events.json --engine MergeTree
+  clickforge table video_events.json --engine MergeTree
 ```
 
 
@@ -130,7 +130,7 @@ Run with chosen engine:
 Generates a single `CREATE TABLE` / `DROP TABLE` migration. Use `scan` first to pick the right engine.
 
 ```bash
-schemamaker table [OPTIONS] <INPUT>
+clickforge table [OPTIONS] <INPUT>
 ```
 
 | Flag | Default | Description |
@@ -142,8 +142,8 @@ schemamaker table [OPTIONS] <INPUT>
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
 
 ```bash
-schemamaker table video_events.json
-schemamaker table video_events.json --engine ReplicatedMergeTree -c my_cluster
+clickforge table video_events.json
+clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster
 ```
 
 
@@ -154,7 +154,7 @@ schemamaker table video_events.json --engine ReplicatedMergeTree -c my_cluster
 Infers a schema from two JSON samples (an old and a new one) and generates additive `ALTER TABLE` migrations for the columns that appear in the new sample but not the old.
 
 ```bash
-schemamaker diff [OPTIONS] <OLD> <NEW>
+clickforge diff [OPTIONS] <OLD> <NEW>
 ```
 
 | Flag | Default | Description |
@@ -166,7 +166,7 @@ schemamaker diff [OPTIONS] <OLD> <NEW>
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
 
 ```bash
-schemamaker diff video_events.json video_events_v2.json -n video_events
+clickforge diff video_events.json video_events_v2.json -n video_events
 ```
 
 Writes `{name}_alter_up.sql` (`ADD COLUMN`) and `{name}_alter_down.sql` (`DROP COLUMN`, reverse order). Removed columns and type changes are **not** migrated automatically — they are reported as warnings on stderr so you can review them by hand (dropping or retyping a populated column is destructive).

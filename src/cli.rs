@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "schemamaker",
+    name = "clickforge",
     about = "Generate ClickHouse migrations from a JSON file",
-    long_about = "Generate ClickHouse migrations from a JSON file.\n\nSubcommands:\n  scan     Analyze fields and pick an engine\n  table    Generate a CREATE TABLE migration\n  kafka    Generate a full Kafka→ClickHouse pipeline\n\nTip: start with `schemamaker scan <file.ndjson>` if unsure which engine to use.",
+    long_about = "Generate ClickHouse migrations from a JSON file.\n\nSubcommands:\n  scan     Analyze fields and pick an engine\n  table    Generate a CREATE TABLE migration\n  kafka    Generate a full Kafka→ClickHouse pipeline\n\nTip: start with `clickforge scan <file.ndjson>` if unsure which engine to use.",
     version = env!("CARGO_PKG_VERSION")
 )]
 pub struct Cli {
