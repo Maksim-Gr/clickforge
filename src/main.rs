@@ -73,6 +73,20 @@ fn read_file(path: &Path) -> String {
     })
 }
 
+/// Prints both migrations to stdout, separated by `-- up` / `-- down` headers.
+fn print_migrations(up: &str, down: &str) {
+    println!("-- up\n{}\n\n-- down\n{}", up, down);
+}
+
+/// Either prints migrations to stdout or writes them to files.
+fn emit_migrations(up: String, down: String, table_name: &str, output_dir: &Path, stdout: bool) {
+    if stdout {
+        print_migrations(&up, &down);
+    } else {
+        write_migrations(up, down, table_name, output_dir);
+    }
+}
+
 fn write_migrations(up: String, down: String, table_name: &str, output_dir: &Path) {
     let up_path = output_dir.join(format!("{}_up.sql", table_name));
     let down_path = output_dir.join(format!("{}_down.sql", table_name));
@@ -103,11 +117,12 @@ fn main() {
             });
             print_schema_summary(&schema);
             let generator = Generator::new(&schema, args.cluster, args.kafka);
-            write_migrations(
+            emit_migrations(
                 generator.generate_up(),
                 generator.generate_down(),
                 &table_name,
                 &args.output_dir,
+                args.stdout,
             );
         }
 
@@ -184,11 +199,12 @@ fn main() {
 
             print_schema_summary(&schema);
             let generator = TableGenerator::new(&schema, engine_config, args.cluster);
-            write_migrations(
+            emit_migrations(
                 generator.generate_up(),
                 generator.generate_down(),
                 &table_name,
                 &args.output_dir,
+                args.stdout,
             );
         }
 
@@ -226,11 +242,12 @@ fn main() {
                     eprintln!("No changes detected.");
                 }
             } else {
-                write_migrations(
+                emit_migrations(
                     result.up,
                     result.down,
                     &format!("{}_alter", table_name),
                     &args.output_dir,
+                    args.stdout,
                 );
             }
         }

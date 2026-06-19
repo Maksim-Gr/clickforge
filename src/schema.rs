@@ -30,10 +30,22 @@ impl ColumnType {
     }
 
     pub fn as_ch_str(&self, nullable: bool) -> String {
-        if nullable && self.nullable_allowed() {
+        self.as_ch_str_with(nullable, false)
+    }
+
+    /// Renders the ClickHouse type, optionally wrapping a `String` in `LowCardinality(...)`.
+    /// ClickHouse nests these as `LowCardinality(Nullable(String))`.
+    pub fn as_ch_str_with(&self, nullable: bool, low_cardinality: bool) -> String {
+        let nullable = nullable && self.nullable_allowed();
+        let inner = if nullable {
             format!("Nullable({})", self.as_str())
         } else {
             self.as_str()
+        };
+        if low_cardinality && matches!(self, ColumnType::String) {
+            format!("LowCardinality({})", inner)
+        } else {
+            inner
         }
     }
 }
@@ -42,6 +54,15 @@ pub struct Column {
     pub name: String,
     pub ch_type: ColumnType,
     pub nullable: bool,
+    pub low_cardinality: bool,
+}
+
+impl Column {
+    /// The full ClickHouse column type, applying the `LowCardinality` wrapper when flagged.
+    pub fn ch_type_str(&self) -> String {
+        self.ch_type
+            .as_ch_str_with(self.nullable, self.low_cardinality)
+    }
 }
 
 pub struct InferredSchema {

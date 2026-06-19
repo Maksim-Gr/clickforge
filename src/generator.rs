@@ -1,4 +1,4 @@
-use crate::schema::{EngineConfig, InferredSchema, TableEngine};
+use crate::schema::{ColumnType, EngineConfig, InferredSchema, TableEngine};
 
 pub struct Generator<'a> {
     schema: &'a InferredSchema,
@@ -81,13 +81,7 @@ impl<'a> Generator<'a> {
             .schema
             .columns
             .iter()
-            .map(|col| {
-                format!(
-                    "\t`{}` {},\n",
-                    col.name,
-                    col.ch_type.as_ch_str(col.nullable)
-                )
-            })
+            .map(|col| format!("\t`{}` {},\n", col.name, col.ch_type_str()))
             .collect();
         format!(
             "CREATE TABLE IF NOT EXISTS datalake.{t} ON CLUSTER {c}\n\
@@ -115,7 +109,7 @@ impl<'a> Generator<'a> {
                 format!(
                     "\t\tJSONExtract(message, '{}', '{}') AS {},\n",
                     col.name,
-                    col.ch_type.as_ch_str(col.nullable),
+                    col.ch_type_str(),
                     col.name
                 )
             })
@@ -190,13 +184,7 @@ impl<'a> TableGenerator<'a> {
             .schema
             .columns
             .iter()
-            .map(|col| {
-                format!(
-                    "\t`{}` {},\n",
-                    col.name,
-                    col.ch_type.as_ch_str(col.nullable)
-                )
-            })
+            .map(|col| format!("\t`{}` {},\n", col.name, col.ch_type_str()))
             .collect();
         // strip trailing comma+newline from last column
         let cols = cols.trim_end_matches(",\n").to_string() + "\n";
@@ -209,26 +197,22 @@ impl<'a> TableGenerator<'a> {
             format!("({})", self.config.order_by.join(", "))
         };
 
-        // Add PARTITION BY only when we have a clear timestamp ORDER BY field
-        let partition_clause = if let Some(first) = self.config.order_by.first() {
-            // heuristic: if the first order-by field looks like a timestamp, partition by it
-            let lower = first.to_lowercase();
-            let is_ts = lower.ends_with("_at")
-                || lower.ends_with("_time")
-                || lower.ends_with("_date")
-                || lower == "timestamp"
-                || lower == "date"
-                || lower == "created_at"
-                || lower == "updated_at"
-                || lower == "event_time";
-            if is_ts {
-                format!("\tPARTITION BY toYYYYMM({first})\n")
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
+        // Add PARTITION BY only when the first ORDER BY field is an actual DateTime
+        // column. `toYYYYMM` requires a date/datetime argument, so partitioning by a
+        // field that merely looks like a timestamp by name (but inferred as String)
+        // would produce SQL that ClickHouse rejects.
+        let partition_clause = self
+            .config
+            .order_by
+            .first()
+            .filter(|first| {
+                self.schema
+                    .columns
+                    .iter()
+                    .any(|c| &c.name == *first && c.ch_type == ColumnType::DateTime64)
+            })
+            .map(|first| format!("\tPARTITION BY toYYYYMM({first})\n"))
+            .unwrap_or_default();
 
         format!(
             "CREATE TABLE IF NOT EXISTS {t}{cluster_clause}\n\
@@ -268,5 +252,52 @@ impl<'a> TableGenerator<'a> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::Column;
+
+    fn schema_with(columns: Vec<Column>) -> InferredSchema {
+        InferredSchema {
+            table_name: "t".to_string(),
+            columns,
+        }
+    }
+
+    fn col(name: &str, ch_type: ColumnType) -> Column {
+        Column {
+            name: name.to_string(),
+            ch_type,
+            nullable: false,
+            low_cardinality: false,
+        }
+    }
+
+    #[test]
+    fn partition_by_emitted_for_datetime_order_key() {
+        let schema = schema_with(vec![col("event_time", ColumnType::DateTime64)]);
+        let config = EngineConfig {
+            engine: TableEngine::MergeTree,
+            order_by: vec!["event_time".to_string()],
+            sum_columns: vec![],
+        };
+        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        assert!(sql.contains("PARTITION BY toYYYYMM(event_time)"));
+    }
+
+    #[test]
+    fn no_partition_by_for_string_named_like_timestamp() {
+        // `event_date` is a String (date-only strings stay String); toYYYYMM would be invalid.
+        let schema = schema_with(vec![col("event_date", ColumnType::String)]);
+        let config = EngineConfig {
+            engine: TableEngine::MergeTree,
+            order_by: vec!["event_date".to_string()],
+            sum_columns: vec![],
+        };
+        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        assert!(!sql.contains("PARTITION BY"));
     }
 }

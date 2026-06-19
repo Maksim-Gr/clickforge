@@ -34,7 +34,7 @@ pub fn diff_schemas(
     for col in &new.columns {
         match old_by_name.get(col.name.as_str()) {
             None => {
-                let ty = col.ch_type.as_ch_str(col.nullable);
+                let ty = col.ch_type_str();
                 up_lines.push(format!(
                     "ALTER TABLE `{t}`{on_cluster} ADD COLUMN IF NOT EXISTS `{}` {};",
                     col.name, ty

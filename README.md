@@ -73,6 +73,7 @@ clickforge kafka [OPTIONS] <INPUT>
 | `-c, --cluster <CLUSTER>` | `clickhouse_datalake` | ClickHouse cluster name |
 | `-k, --kafka <KAFKA>` | `kafka` | Kafka collection name |
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
+| `--stdout` | off | Print migrations to stdout instead of writing files |
 
 ```bash
 clickforge kafka video_events.json
@@ -85,7 +86,7 @@ Writes `{name}_up.sql` (creates streams table, raw table, datalake table, raw_mv
 
 ### `scan`
 
-Analyzes JSON fields, classifies them (Timestamp-like, ID-like, Numeric), and prints engine suggestions with `ORDER BY` recommendations.
+Analyzes JSON fields, classifies them (Timestamp-like, ID-like, Numeric), and prints engine suggestions with `ORDER BY` recommendations. When numeric metrics and a dimension (id/timestamp) are present, it also suggests `SummingMergeTree` with the metric columns to sum.
 
 ```bash
 clickforge scan [OPTIONS] <INPUT>
@@ -140,6 +141,7 @@ clickforge table [OPTIONS] <INPUT>
 | `--order-by <FIELDS>` | inferred from field names | Comma-separated `ORDER BY` fields |
 | `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` clause; required for `ReplicatedMergeTree` |
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
+| `--stdout` | off | Print migrations to stdout instead of writing files |
 
 ```bash
 clickforge table video_events.json
@@ -164,6 +166,7 @@ clickforge diff [OPTIONS] <OLD> <NEW>
 | `-n, --name <NAME>` | new file stem | Override the table name |
 | `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` to the statements |
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
+| `--stdout` | off | Print migrations to stdout instead of writing files |
 
 ```bash
 clickforge diff video_events.json video_events_v2.json -n video_events
@@ -205,6 +208,8 @@ Types are inferred by scanning every record and widening as needed:
 | null / nested object | `Nullable(String)` |
 
 `Array` and `Map` columns are never wrapped in `Nullable` (ClickHouse forbids it). Date-only strings (`2024-03-01`) are left as `String`.
+
+String columns with few distinct values across a large-enough sample are emitted as `LowCardinality(String)` (a ClickHouse storage optimization). This is conservative: it stays off for small samples and high-distinct columns.
 
 If the same field appears as `Int64` in one record and `Float64` in another, it widens to `Nullable(Float64)`. Any other type conflict widens to `Nullable(String)`.
 

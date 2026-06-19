@@ -41,6 +41,9 @@ pub struct KafkaArgs {
     /// Output directory for migration files
     #[arg(short, long, default_value = ".")]
     pub output_dir: PathBuf,
+    /// Print migrations to stdout instead of writing files
+    #[arg(long)]
+    pub stdout: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -58,6 +61,9 @@ pub struct DiffArgs {
     /// Output directory for migration files
     #[arg(short, long, default_value = ".")]
     pub output_dir: PathBuf,
+    /// Print migrations to stdout instead of writing files
+    #[arg(long)]
+    pub stdout: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -92,4 +98,7 @@ pub struct TableArgs {
     /// Output directory for migration files
     #[arg(short, long, default_value = ".")]
     pub output_dir: PathBuf,
+    /// Print migrations to stdout instead of writing files
+    #[arg(long)]
+    pub stdout: bool,
 }
