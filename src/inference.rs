@@ -1,11 +1,18 @@
 use crate::schema::{Column, ColumnType, InferredSchema};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Stop counting distinct values once a column exceeds this many — past it the
+/// column is clearly not low-cardinality, so the exact count no longer matters.
+const CARDINALITY_CAP: usize = 100;
+/// Don't flag low-cardinality on small samples — too little signal.
+const MIN_RECORDS_FOR_LC: usize = 20;
 
 pub fn infer_schema(content: &str, table_name: &str) -> Result<InferredSchema, String> {
     let mut field_order: Vec<String> = Vec::new();
     let mut field_types: HashMap<String, ColumnType> = HashMap::new();
     let mut field_seen: HashMap<String, usize> = HashMap::new(); // how many records contained this field
+    let mut distinct_values: HashMap<String, HashSet<String>> = HashMap::new(); // capped distinct string values
     let mut record_count = 0;
 
     let values: Vec<Value> = {
@@ -39,6 +46,13 @@ pub fn infer_schema(content: &str, table_name: &str) -> Result<InferredSchema, S
                 field_types.insert(key.clone(), inferred);
             }
             *field_seen.entry(key.clone()).or_insert(0) += 1;
+            // Track distinct values for plain string fields, capped.
+            if let Value::String(s) = value {
+                let set = distinct_values.entry(key.clone()).or_default();
+                if set.len() <= CARDINALITY_CAP {
+                    set.insert(s.clone());
+                }
+            }
         }
         record_count += 1;
     }
@@ -53,10 +67,16 @@ pub fn infer_schema(content: &str, table_name: &str) -> Result<InferredSchema, S
             let seen = *field_seen.get(&name).unwrap_or(&0);
             // A field is nullable if it was missing from at least one record
             let nullable = seen < record_count;
+            let low_cardinality = is_low_cardinality(
+                &ch_type,
+                distinct_values.get(&name).map(|s| s.len()),
+                record_count,
+            );
             Column {
                 name,
                 ch_type,
                 nullable,
+                low_cardinality,
             }
         })
         .collect();
@@ -142,6 +162,19 @@ fn looks_like_datetime(s: &str) -> bool {
         && digit(11) && digit(12) && b[13] == b':'  // hh:
         && digit(14) && digit(15) && b[16] == b':'  // mm:
         && digit(17) && digit(18) // ss
+}
+
+/// A `String` column is low-cardinality when, across a large-enough sample, it has
+/// few distinct values that are clearly fewer than the number of records. Conservative:
+/// stays off for small samples or when distinct counting hit the cap.
+fn is_low_cardinality(ch_type: &ColumnType, distinct: Option<usize>, record_count: usize) -> bool {
+    if !matches!(ch_type, ColumnType::String) || record_count < MIN_RECORDS_FOR_LC {
+        return false;
+    }
+    match distinct {
+        Some(d) => d <= CARDINALITY_CAP && d * 2 < record_count,
+        None => false,
+    }
 }
 
 fn merge_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
@@ -240,6 +273,43 @@ mod tests {
     fn infer_nested_object_falls_back_to_string() {
         let schema = infer_schema(r#"[{"meta":{"inner":{"x":1}}}]"#, "t").unwrap();
         assert_eq!(schema.columns[0].ch_type, ColumnType::String);
+    }
+
+    #[test]
+    fn low_cardinality_flagged_for_few_distinct_strings() {
+        // 40 records, only 2 distinct values → low cardinality.
+        let records: String = (0..40)
+            .map(|i| {
+                format!(
+                    r#"{{"status":"{}"}}"#,
+                    if i % 2 == 0 { "ok" } else { "err" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let schema = infer_schema(&records, "t").unwrap();
+        let status = schema.columns.iter().find(|c| c.name == "status").unwrap();
+        assert!(status.low_cardinality);
+        assert_eq!(status.ch_type_str(), "LowCardinality(String)");
+    }
+
+    #[test]
+    fn high_cardinality_string_not_flagged() {
+        // 40 records, all distinct → not low cardinality.
+        let records: String = (0..40)
+            .map(|i| format!(r#"{{"id":"u{}"}}"#, i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let schema = infer_schema(&records, "t").unwrap();
+        let id = schema.columns.iter().find(|c| c.name == "id").unwrap();
+        assert!(!id.low_cardinality);
+    }
+
+    #[test]
+    fn low_cardinality_off_for_small_sample() {
+        let schema = infer_schema(r#"[{"status":"ok"},{"status":"ok"}]"#, "t").unwrap();
+        let status = schema.columns.iter().find(|c| c.name == "status").unwrap();
+        assert!(!status.low_cardinality);
     }
 
     #[test]

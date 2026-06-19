@@ -129,6 +129,36 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
         });
     }
 
+    // 3. SummingMergeTree — if there are numeric metrics plus a dimension to group by.
+    // Keep the grouping key narrow (one primary id + one timestamp) so it stays a
+    // sensible default; a wide ORDER BY across every id would rarely be what you want.
+    let numeric_fields: Vec<&str> = fields
+        .iter()
+        .filter(|f| f.numeric)
+        .map(|f| f.name.as_str())
+        .collect();
+    let dimensions: Vec<&str> = id_fields
+        .iter()
+        .take(1)
+        .chain(timestamp_fields.iter().take(1))
+        .copied()
+        .collect();
+    if !numeric_fields.is_empty() && !dimensions.is_empty() {
+        let order_by: Vec<String> = dimensions.iter().map(|s| s.to_string()).collect();
+        let sum_columns: Vec<String> = numeric_fields.iter().map(|s| s.to_string()).collect();
+        let rationale = format!(
+            "pre-aggregates ({}) grouped by ({})",
+            sum_columns.join(", "),
+            order_by.join(", ")
+        );
+        suggestions.push(EngineSuggestion {
+            engine: TableEngine::SummingMergeTree,
+            order_by,
+            sum_columns,
+            rationale,
+        });
+    }
+
     ScanResult {
         fields,
         suggestions,
@@ -213,5 +243,65 @@ pub fn print_scan(result: &ScanResult, source: &str, record_count: usize) {
                 s.order_by.join(",")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inference::infer_schema;
+
+    #[test]
+    fn suggests_summing_for_metrics_with_dimensions() {
+        let schema = infer_schema(
+            r#"[{"user_id":"u1","event_time":"2024-03-01T00:00:00Z","amount":5}]"#,
+            "t",
+        )
+        .unwrap();
+        let result = scan(&schema, false);
+        let summing = result
+            .suggestions
+            .iter()
+            .find(|s| s.engine == TableEngine::SummingMergeTree)
+            .expect("expected a SummingMergeTree suggestion");
+        assert_eq!(summing.sum_columns, vec!["amount".to_string()]);
+        assert!(summing.order_by.contains(&"user_id".to_string()));
+        assert!(summing.order_by.contains(&"event_time".to_string()));
+    }
+
+    #[test]
+    fn summing_order_by_uses_one_id_plus_one_timestamp() {
+        // Multiple id fields present — only the first should be in the grouping key.
+        let schema = infer_schema(
+            r#"[{"user_id":"u1","session_id":"s1","video_id":"v1","event_time":"2024-03-01T00:00:00Z","amount":5}]"#,
+            "t",
+        )
+        .unwrap();
+        let result = scan(&schema, false);
+        let summing = result
+            .suggestions
+            .iter()
+            .find(|s| s.engine == TableEngine::SummingMergeTree)
+            .expect("expected a SummingMergeTree suggestion");
+        assert_eq!(
+            summing.order_by,
+            vec!["user_id".to_string(), "event_time".to_string()]
+        );
+    }
+
+    #[test]
+    fn no_summing_without_numeric_metric() {
+        let schema = infer_schema(
+            r#"[{"user_id":"u1","event_time":"2024-03-01T00:00:00Z"}]"#,
+            "t",
+        )
+        .unwrap();
+        let result = scan(&schema, false);
+        assert!(
+            !result
+                .suggestions
+                .iter()
+                .any(|s| s.engine == TableEngine::SummingMergeTree)
+        );
     }
 }
