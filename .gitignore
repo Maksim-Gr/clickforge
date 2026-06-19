@@ -4,4 +4,4 @@
 # Local ClickHouse binaries and the compiled CLI (never commit these)
 /clickhouse
 /clickhouse.0
-/schemamaker
+/clickforge

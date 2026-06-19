@@ -14,13 +14,13 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: schemamaker-macos-arm64
+            artifact: clickforge-macos-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: schemamaker-macos-x86_64
+            artifact: clickforge-macos-x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact: schemamaker-linux-x86_64
+            artifact: clickforge-linux-x86_64
 
     steps:
       - uses: actions/checkout@v6
@@ -39,8 +39,8 @@ jobs:
 
       - name: Package
         run: |
-          cp target/${{ matrix.target }}/release/schemamaker schemamaker
-          tar -czf ${{ matrix.artifact }}.tar.gz schemamaker
+          cp target/${{ matrix.target }}/release/clickforge clickforge
+          tar -czf ${{ matrix.artifact }}.tar.gz clickforge
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -64,6 +64,6 @@ jobs:
           name: ${{ github.ref_name }}
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
           files: |
-            schemamaker-macos-arm64/schemamaker-macos-arm64.tar.gz
-            schemamaker-macos-x86_64/schemamaker-macos-x86_64.tar.gz
-            schemamaker-linux-x86_64/schemamaker-linux-x86_64.tar.gz
+            clickforge-macos-arm64/clickforge-macos-arm64.tar.gz
+            clickforge-macos-x86_64/clickforge-macos-x86_64.tar.gz
+            clickforge-linux-x86_64/clickforge-linux-x86_64.tar.gz

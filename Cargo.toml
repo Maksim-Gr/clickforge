@@ -1,9 +1,9 @@
 [package]
-name = "schemamaker"
-version = "0.3.0"
+name = "clickforge"
+version = "0.4.0"
 edition = "2024"
 description = "Generate ClickHouse migration SQL from a JSON file"
-repository = "https://github.com/Maksim-Gr/schemamaker"
+repository = "https://github.com/Maksim-Gr/clickforge"
 license = "MIT"
 
 [dependencies]
