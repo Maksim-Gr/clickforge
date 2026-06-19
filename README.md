@@ -4,25 +4,32 @@ Generate ClickHouse migration SQL from a JSON file. Replaces the `create_ddl_for
 
 ## Install
 
-Download the binary for your platform from the [v0.4.0 release](https://github.com/Maksim-Gr/clickforge/releases/tag/v0.4.0).
+Download the prebuilt binary for your platform from the [latest release](https://github.com/Maksim-Gr/clickforge/releases/latest). The `latest/download` URLs below always resolve to the newest release, so they never go stale.
 
 **macOS (Apple Silicon)**
 ```bash
-curl -L https://github.com/Maksim-Gr/clickforge/releases/download/v0.4.0/clickforge-macos-arm64.tar.gz | tar -xz
-chmod +x clickforge && mv clickforge /usr/local/bin/clickforge
+curl -L https://github.com/Maksim-Gr/clickforge/releases/latest/download/clickforge-macos-arm64.tar.gz | tar -xz
+chmod +x clickforge && sudo mv clickforge /usr/local/bin/clickforge
 ```
 
 **macOS (Intel)**
 ```bash
-curl -L https://github.com/Maksim-Gr/clickforge/releases/download/v0.4.0/clickforge-macos-x86_64.tar.gz | tar -xz
-chmod +x clickforge && mv clickforge /usr/local/bin/clickforge
+curl -L https://github.com/Maksim-Gr/clickforge/releases/latest/download/clickforge-macos-x86_64.tar.gz | tar -xz
+chmod +x clickforge && sudo mv clickforge /usr/local/bin/clickforge
 ```
 
 **Linux (x86_64)**
 ```bash
-curl -L https://github.com/Maksim-Gr/clickforge/releases/download/v0.4.0/clickforge-linux-x86_64.tar.gz | tar -xz
-chmod +x clickforge && mv clickforge /usr/local/bin/clickforge
+curl -L https://github.com/Maksim-Gr/clickforge/releases/latest/download/clickforge-linux-x86_64.tar.gz | tar -xz
+chmod +x clickforge && sudo mv clickforge /usr/local/bin/clickforge
 ```
+
+To install a specific version, replace `latest/download` with `download/<tag>`, e.g. `download/v0.5.0`.
+
+> **macOS:** the binary is unsigned, so Gatekeeper may block the first run. If you see *"cannot be opened because the developer cannot be verified"*, clear the quarantine flag:
+> ```bash
+> xattr -d com.apple.quarantine /usr/local/bin/clickforge
+> ```
 
 Verify:
 ```bash
