@@ -2,6 +2,8 @@
 
 Generate ClickHouse migration SQL from a JSON file. Replaces the `create_ddl_for_kafka.sh` shell script without requiring a ClickHouse binary.
 
+![clickforge demo — scan a JSON sample and generate a migration](assets/demo.gif)
+
 ## Install
 
 Download the prebuilt binary for your platform from the [latest release](https://github.com/Maksim-Gr/clickforge/releases/latest). The `latest/download` URLs below always resolve to the newest release, so they never go stale.
