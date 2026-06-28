@@ -27,7 +27,7 @@ pub enum Commands {
 
 #[derive(Parser, Debug)]
 pub struct KafkaArgs {
-    /// Path to a NDJSON file (one JSON object per line)
+    /// Path to a JSON array or NDJSON file (or `-` for stdin)
     pub input: PathBuf,
     /// Override table name (defaults to input file stem)
     #[arg(short, long)]
@@ -68,7 +68,7 @@ pub struct DiffArgs {
 
 #[derive(Parser, Debug)]
 pub struct ScanArgs {
-    /// Path to a NDJSON file (one JSON object per line)
+    /// Path to a JSON array or NDJSON file (or `-` for stdin)
     pub input: PathBuf,
     /// Override table name (defaults to input file stem)
     #[arg(short, long)]
@@ -80,7 +80,7 @@ pub struct ScanArgs {
 
 #[derive(Parser, Debug)]
 pub struct TableArgs {
-    /// Path to a NDJSON file (one JSON object per line)
+    /// Path to a JSON array or NDJSON file (or `-` for stdin)
     pub input: PathBuf,
     /// Override table name (defaults to input file stem)
     #[arg(short, long)]
