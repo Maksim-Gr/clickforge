@@ -31,7 +31,7 @@ pub enum Commands {
     after_help = "EXAMPLES:\n  clickforge kafka video_events.json\n  clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/"
 )]
 pub struct KafkaArgs {
-    /// Path to a NDJSON file (one JSON object per line)
+    /// Path to a JSON array or NDJSON file (or `-` for stdin)
     pub input: PathBuf,
     /// Override table name (defaults to input file stem)
     #[arg(short, long)]
@@ -78,7 +78,7 @@ pub struct DiffArgs {
     after_help = "EXAMPLES:\n  clickforge scan video_events.json\n  clickforge scan video_events.json -c my_cluster\n\nIn a terminal, scan ends by offering to generate a migration from a suggested engine."
 )]
 pub struct ScanArgs {
-    /// Path to a NDJSON file (one JSON object per line)
+    /// Path to a JSON array or NDJSON file (or `-` for stdin)
     pub input: PathBuf,
     /// Override table name (defaults to input file stem)
     #[arg(short, long)]
@@ -93,7 +93,7 @@ pub struct ScanArgs {
     after_help = "EXAMPLES:\n  clickforge table video_events.json\n  clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster"
 )]
 pub struct TableArgs {
-    /// Path to a NDJSON file (one JSON object per line)
+    /// Path to a JSON array or NDJSON file (or `-` for stdin)
     pub input: PathBuf,
     /// Override table name (defaults to input file stem)
     #[arg(short, long)]

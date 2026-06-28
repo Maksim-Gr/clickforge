@@ -52,6 +52,8 @@ The binary is at `./target/release/clickforge`.
 clickforge <COMMAND> [OPTIONS] <INPUT>
 ```
 
+The `kafka`, `scan`, and `table` commands take a single `<INPUT>`. The `diff` command takes two positionals, `<OLD> <NEW>` (see the [`diff`](#diff) section).
+
 `<INPUT>` is a path to a JSON/NDJSON file, or `-` to read from stdin. When reading from stdin, pass `--name` to set the table name (it defaults to `table`):
 
 ```bash
@@ -103,7 +105,7 @@ clickforge scan [OPTIONS] <INPUT>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n, --name <NAME>` | input filename stem | Override the table name (used to name files if you generate one from the prompt) |
+| `-n, --name <NAME>` | input filename stem | Names the generated `{name}_up.sql`/`{name}_down.sql` files if you pick an engine at the prompt; otherwise no effect on output |
 | `-c, --cluster <CLUSTER>` | — | If set, suggests `ReplicatedMergeTree` variants |
 
 ```bash
@@ -129,20 +131,23 @@ Example output (truncated):
 Field analysis: video_events.json  (4 records, 13 fields)
 
   event_id              String            required → ID-like
-  event_time            DateTime64(3)     required → Timestamp-like
-  amount                Float64           nullable → Numeric
+  playback_position_ms  Int64             required → Numeric
+  timestamp             DateTime64(3)     required → Timestamp-like
+  client_ip             Nullable(String)  nullable
 
 Suggested engines:
 
   1. MergeTree
-     ORDER BY (event_time)
+     ORDER BY (timestamp)
+     → general purpose time-series table
 
   2. ReplacingMergeTree
-     ORDER BY (event_id, event_time)
-     → deduplicates rows by `event_id`
+     ORDER BY (event_id, timestamp)
+     → deduplicates rows by `event_id` — good for upsert-like data
 
-Run with chosen engine:
-  clickforge table video_events.json --engine MergeTree
+To generate a migration with the chosen engine, run:
+  clickforge table video_events.json --engine MergeTree --order-by timestamp
+  clickforge table video_events.json --engine ReplacingMergeTree --order-by event_id,timestamp
 ```
 
 
