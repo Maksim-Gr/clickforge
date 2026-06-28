@@ -2,6 +2,8 @@
 
 Generate ClickHouse migration SQL from a JSON file. Replaces the `create_ddl_for_kafka.sh` shell script without requiring a ClickHouse binary.
 
+![clickforge demo — scan a JSON sample and generate a migration](assets/demo.gif)
+
 ## Install
 
 Download the prebuilt binary for your platform from the [latest release](https://github.com/Maksim-Gr/clickforge/releases/latest). The `latest/download` URLs below always resolve to the newest release, so they never go stale.
@@ -103,13 +105,26 @@ clickforge scan [OPTIONS] <INPUT>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n, --name <NAME>` | — | Accepted for consistency with other commands; has no effect on `scan` output |
+| `-n, --name <NAME>` | input filename stem | Names the generated `{name}_up.sql`/`{name}_down.sql` files if you pick an engine at the prompt; otherwise no effect on output |
 | `-c, --cluster <CLUSTER>` | — | If set, suggests `ReplicatedMergeTree` variants |
 
 ```bash
 clickforge scan video_events.json
 clickforge scan video_events.json -c my_cluster
 ```
+
+When run in a terminal, `scan` finishes by offering to generate a migration from one of
+its suggestions, so you don't have to re-type a `table` command:
+
+```
+Pick an engine to generate [1-3, Enter to skip]: 2
+Written: ./video_events_up.sql
+Written: ./video_events_down.sql
+```
+
+Picking a number writes `{name}_up.sql`/`{name}_down.sql` (using that suggestion's engine
+and `ORDER BY`) to the current directory; press Enter to skip. The prompt only appears in
+an interactive terminal — piped or scripted runs just print the suggestions as before.
 
 Example output (truncated):
 ```
