@@ -118,9 +118,7 @@ fn maybe_generate_interactively(
 ) {
     use std::io::{IsTerminal, Write};
 
-    if result.suggestions.is_empty()
-        || input.as_os_str() == "-"
-        || !std::io::stdin().is_terminal()
+    if result.suggestions.is_empty() || input.as_os_str() == "-" || !std::io::stdin().is_terminal()
     {
         return;
     }
