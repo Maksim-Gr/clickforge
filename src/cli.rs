@@ -4,10 +4,10 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     name = "clickforge",
-    about = "Generate ClickHouse migrations from a JSON file",
-    long_about = "Generate ClickHouse migrations from a JSON file.\n\nSubcommands:\n  scan     Analyze fields and pick an engine\n  table    Generate a CREATE TABLE migration\n  kafka    Generate a full Kafka→ClickHouse pipeline\n\nTip: start with `clickforge scan <file.ndjson>` if unsure which engine to use.",
+    about = "Generate a Kafka→ClickHouse ingestion pipeline (and helper migrations) from a JSON sample",
+    long_about = "Generate the Kafka→ClickHouse ingestion pipeline from a JSON sample — the streams/raw/datalake tables and the materialized views that connect them.\n\nCommands:\n  kafka    Generate the full Kafka→ClickHouse ingestion pipeline (primary)\n  scan     Helper: inspect fields and pick an engine\n  table    Helper: generate a single CREATE TABLE migration\n  diff     Helper: generate ALTER TABLE migrations as the schema evolves\n\nTip: run `clickforge kafka <file>` to generate the whole pipeline.",
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "EXAMPLES:\n  clickforge scan video_events.json           Analyze fields, suggest engines, then pick one to generate\n  clickforge table video_events.json          Generate a CREATE TABLE migration\n  clickforge kafka video_events.json          Generate a full Kafka→ClickHouse pipeline\n  clickforge diff old.json new.json -n events Generate an additive ALTER TABLE migration\n\nNew here? Start with `clickforge scan <file>` and follow the prompt."
+    after_help = "EXAMPLES:\n  clickforge kafka video_events.json          Generate the full Kafka→ClickHouse ingestion pipeline\n  clickforge scan video_events.json           Helper: inspect fields, suggest engines, then pick one to generate\n  clickforge table video_events.json          Helper: generate a single CREATE TABLE migration\n  clickforge diff old.json new.json -n events Helper: generate an additive ALTER TABLE migration\n\nNew here? Run `clickforge kafka <file>` to generate the pipeline."
 )]
 pub struct Cli {
     #[command(subcommand)]
