@@ -6,7 +6,8 @@ use std::path::PathBuf;
     name = "clickforge",
     about = "Generate ClickHouse migrations from a JSON file",
     long_about = "Generate ClickHouse migrations from a JSON file.\n\nSubcommands:\n  scan     Analyze fields and pick an engine\n  table    Generate a CREATE TABLE migration\n  kafka    Generate a full Kafka→ClickHouse pipeline\n\nTip: start with `clickforge scan <file.ndjson>` if unsure which engine to use.",
-    version = env!("CARGO_PKG_VERSION")
+    version = env!("CARGO_PKG_VERSION"),
+    after_help = "EXAMPLES:\n  clickforge scan video_events.json           Analyze fields, suggest engines, then pick one to generate\n  clickforge table video_events.json          Generate a CREATE TABLE migration\n  clickforge kafka video_events.json          Generate a full Kafka→ClickHouse pipeline\n  clickforge diff old.json new.json -n events Generate an additive ALTER TABLE migration\n\nNew here? Start with `clickforge scan <file>` and follow the prompt."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -26,6 +27,9 @@ pub enum Commands {
 }
 
 #[derive(Parser, Debug)]
+#[command(
+    after_help = "EXAMPLES:\n  clickforge kafka video_events.json\n  clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/"
+)]
 pub struct KafkaArgs {
     /// Path to a NDJSON file (one JSON object per line)
     pub input: PathBuf,
@@ -47,6 +51,9 @@ pub struct KafkaArgs {
 }
 
 #[derive(Parser, Debug)]
+#[command(
+    after_help = "EXAMPLES:\n  clickforge diff video_events.json video_events_v2.json -n video_events"
+)]
 pub struct DiffArgs {
     /// Path to the existing/old JSON sample (or `-` for stdin)
     pub old: PathBuf,
@@ -67,6 +74,9 @@ pub struct DiffArgs {
 }
 
 #[derive(Parser, Debug)]
+#[command(
+    after_help = "EXAMPLES:\n  clickforge scan video_events.json\n  clickforge scan video_events.json -c my_cluster\n\nIn a terminal, scan ends by offering to generate a migration from a suggested engine."
+)]
 pub struct ScanArgs {
     /// Path to a NDJSON file (one JSON object per line)
     pub input: PathBuf,
@@ -79,6 +89,9 @@ pub struct ScanArgs {
 }
 
 #[derive(Parser, Debug)]
+#[command(
+    after_help = "EXAMPLES:\n  clickforge table video_events.json\n  clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster"
+)]
 pub struct TableArgs {
     /// Path to a NDJSON file (one JSON object per line)
     pub input: PathBuf,

@@ -87,6 +87,68 @@ fn emit_migrations(up: String, down: String, table_name: &str, output_dir: &Path
     }
 }
 
+/// Builds a CREATE/DROP TABLE migration from a chosen engine config and emits it.
+fn generate_table_migration(
+    schema: &schema::InferredSchema,
+    engine_config: schema::EngineConfig,
+    cluster: Option<String>,
+    table_name: &str,
+    output_dir: &Path,
+    stdout: bool,
+) {
+    let generator = TableGenerator::new(schema, engine_config, cluster);
+    emit_migrations(
+        generator.generate_up(),
+        generator.generate_down(),
+        table_name,
+        output_dir,
+        stdout,
+    );
+}
+
+/// After `scan`, offer to generate a migration from one of the suggestions so the
+/// user doesn't have to re-type a `table` command. Only prompts in an interactive
+/// terminal reading a real file; piped/scripted runs are left untouched.
+fn maybe_generate_interactively(
+    result: &scanner::ScanResult,
+    schema: &schema::InferredSchema,
+    cluster: Option<String>,
+    table_name: &str,
+    input: &Path,
+) {
+    use std::io::{IsTerminal, Write};
+
+    if result.suggestions.is_empty()
+        || input.as_os_str() == "-"
+        || !std::io::stdin().is_terminal()
+    {
+        return;
+    }
+
+    let n = result.suggestions.len();
+    print!("\nPick an engine to generate [1-{}, Enter to skip]: ", n);
+    let _ = std::io::stdout().flush();
+
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return;
+    }
+    let choice = match line.trim().parse::<usize>() {
+        Ok(k) if (1..=n).contains(&k) => k,
+        _ => return, // empty / invalid / out of range → skip
+    };
+
+    let engine_config = result.suggestions[choice - 1].to_engine_config();
+    generate_table_migration(
+        schema,
+        engine_config,
+        cluster,
+        table_name,
+        Path::new("."),
+        false,
+    );
+}
+
 fn write_migrations(up: String, down: String, table_name: &str, output_dir: &Path) {
     let up_path = output_dir.join(format!("{}_up.sql", table_name));
     let down_path = output_dir.join(format!("{}_down.sql", table_name));
@@ -141,6 +203,7 @@ fn main() {
                 args.input.display().to_string()
             };
             scanner::print_scan(&result, &source, inference::record_count(&content));
+            maybe_generate_interactively(&result, &schema, args.cluster, &table_name, &args.input);
         }
 
         cli::Commands::Table(args) => {
@@ -198,10 +261,10 @@ fn main() {
             };
 
             print_schema_summary(&schema);
-            let generator = TableGenerator::new(&schema, engine_config, args.cluster);
-            emit_migrations(
-                generator.generate_up(),
-                generator.generate_down(),
+            generate_table_migration(
+                &schema,
+                engine_config,
+                args.cluster,
                 &table_name,
                 &args.output_dir,
                 args.stdout,

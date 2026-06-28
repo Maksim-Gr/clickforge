@@ -101,13 +101,26 @@ clickforge scan [OPTIONS] <INPUT>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n, --name <NAME>` | input filename stem | Override the table name |
+| `-n, --name <NAME>` | input filename stem | Override the table name (used to name files if you generate one from the prompt) |
 | `-c, --cluster <CLUSTER>` | — | If set, suggests `ReplicatedMergeTree` variants |
 
 ```bash
 clickforge scan video_events.json
 clickforge scan video_events.json -c my_cluster
 ```
+
+When run in a terminal, `scan` finishes by offering to generate a migration from one of
+its suggestions, so you don't have to re-type a `table` command:
+
+```
+Pick an engine to generate [1-3, Enter to skip]: 2
+Written: ./video_events_up.sql
+Written: ./video_events_down.sql
+```
+
+Picking a number writes `{name}_up.sql`/`{name}_down.sql` (using that suggestion's engine
+and `ORDER BY`) to the current directory; press Enter to skip. The prompt only appears in
+an interactive terminal — piped or scripted runs just print the suggestions as before.
 
 Example output (truncated):
 ```
