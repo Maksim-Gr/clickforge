@@ -1,8 +1,24 @@
 # clickforge
 
-Generate ClickHouse migration SQL from a JSON file. Replaces the `create_ddl_for_kafka.sh` shell script without requiring a ClickHouse binary.
+Generate the **Kafka→ClickHouse ingestion pipeline** — the `streams`, `raw`, and `datalake` tables plus the materialized views that connect them — from a single JSON sample. A drop-in replacement for the `create_ddl_for_kafka.sh` script that needs no ClickHouse binary.
 
-![clickforge demo — scan a JSON sample and generate a migration](assets/demo.gif)
+![clickforge kafka demo — generate the streams→raw→datalake pipeline from a JSON sample](assets/kafka.gif)
+
+## The Kafka ingestion flow
+
+Reliably ingesting Kafka events into ClickHouse takes three layers and two materialized views connecting them — exactly what `clickforge kafka` generates in one shot:
+
+```
+Kafka topic
+    ↓
+streams.{name}     # Kafka engine cursor — holds no data, just reads from the topic
+    ↓ (streams_mv)
+raw.{name}         # durable replay buffer — original message string + Kafka metadata
+    ↓ (raw_mv)
+datalake.{name}    # typed, queryable table — fields JSONExtracted at write time
+```
+
+`raw` exists so you can rebuild `datalake` without re-consuming from Kafka if the schema changes.
 
 ## Install
 
@@ -46,6 +62,20 @@ cargo build --release
 
 The binary is at `./target/release/clickforge`.
 
+## Quickstart
+
+Point `clickforge kafka` at a JSON sample of your Kafka messages to generate the whole pipeline:
+
+```bash
+clickforge kafka video_events.json
+```
+
+This writes `video_events_up.sql` (the `streams` Kafka table, the `raw` replay buffer, the typed `datalake` table, and both materialized views) and `video_events_down.sql` (drops them in reverse). Target your cluster and Kafka collection as needed:
+
+```bash
+clickforge kafka video_events.json -c clickhouse_datalake -k kafka -o migrations/
+```
+
 ## Usage
 
 ```bash
@@ -63,12 +93,14 @@ cat video_events.json | clickforge table - --name video_events -o migrations/
 
 ### Commands
 
-| Command   | Description |
-|-----------|-------------|
-| `kafka`   | Generate full Kafka→ClickHouse pipeline migrations (streams, raw, datalake) |
-| `scan`    | Scan JSON fields and suggest suitable ClickHouse table engines |
-| `table`   | Generate a simple `CREATE TABLE` migration from JSON |
-| `diff`    | Generate `ALTER TABLE` migrations from the diff between two JSON samples |
+`kafka` is the primary command — it generates the whole ingestion pipeline. The rest are helpers around it:
+
+| Command   | Role | Description |
+|-----------|------|-------------|
+| `kafka`   | **primary** | Generate the full Kafka→ClickHouse pipeline (streams, raw, datalake + materialized views) |
+| `scan`    | helper | Inspect JSON fields and pick a ClickHouse engine for a one-off table |
+| `table`   | helper | Generate a single `CREATE TABLE` migration from JSON |
+| `diff`    | helper | Generate `ALTER TABLE` migrations to evolve a table as your JSON schema changes |
 
 ---
 
@@ -95,9 +127,15 @@ Writes `{name}_up.sql` (creates streams table, raw table, datalake table, raw_mv
 
 ---
 
+## Helper commands
+
+`scan`, `table`, and `diff` support the pipeline above — choose an engine, generate a one-off table, or evolve the `datalake` schema as your messages change. You don't need them for the basic `kafka` flow.
+
 ### `scan`
 
 Analyzes JSON fields, classifies them (Timestamp-like, ID-like, Numeric), and prints engine suggestions with `ORDER BY` recommendations. When numeric metrics and a dimension (id/timestamp) are present, it also suggests `SummingMergeTree` with the metric columns to sum.
+
+![clickforge scan demo — inspect fields and generate a one-off table](assets/demo.gif)
 
 ```bash
 clickforge scan [OPTIONS] <INPUT>
@@ -202,22 +240,6 @@ clickforge diff video_events.json video_events_v2.json -n video_events
 Writes `{name}_alter_up.sql` (`ADD COLUMN`) and `{name}_alter_down.sql` (`DROP COLUMN`, reverse order). Removed columns and type changes are **not** migrated automatically — they are reported as warnings on stderr so you can review them by hand (dropping or retyping a populated column is destructive).
 
 ---
-
-## Why the Kafka migration flow
-
-Ingesting Kafka events into ClickHouse reliably requires three layers and two materialized views connecting them:
-
-```
-Kafka topic
-    ↓
-streams.{name}     # Kafka engine cursor — holds no data, just reads from the topic
-    ↓ (streams_mv)
-raw.{name}         # durable replay buffer — original message string + Kafka metadata
-    ↓ (raw_mv)
-datalake.{name}    # typed, queryable table — fields JSONExtracted at write time
-```
-
-`raw` exists so you can rebuild `datalake` without re-consuming from Kafka if the schema changes.
 
 ## Type Inference
 
