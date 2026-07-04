@@ -73,6 +73,14 @@ fn read_file(path: &Path) -> String {
     })
 }
 
+/// Infers a schema from already-read content, or prints an error and exits(1).
+fn schema_or_exit(content: &str, table_name: &str) -> schema::InferredSchema {
+    inference::infer_schema(content, table_name).unwrap_or_else(|e| {
+        eprintln!("Error inferring schema: {}", e);
+        std::process::exit(1);
+    })
+}
+
 /// Prints both migrations to stdout, separated by `-- up` / `-- down` headers.
 fn print_migrations(up: &str, down: &str) {
     println!("-- up\n{}\n\n-- down\n{}", up, down);
@@ -171,10 +179,7 @@ fn main() {
         cli::Commands::Kafka(args) => {
             let table_name = table_name_from(args.name, &args.input);
             let content = read_input(&args.input);
-            let schema = inference::infer_schema(&content, &table_name).unwrap_or_else(|e| {
-                eprintln!("Error inferring schema: {}", e);
-                std::process::exit(1);
-            });
+            let schema = schema_or_exit(&content, &table_name);
             print_schema_summary(&schema);
             let generator = Generator::new(&schema, args.cluster, args.kafka);
             emit_migrations(
@@ -189,10 +194,7 @@ fn main() {
         cli::Commands::Scan(args) => {
             let table_name = table_name_from(args.name, &args.input);
             let content = read_input(&args.input);
-            let schema = inference::infer_schema(&content, &table_name).unwrap_or_else(|e| {
-                eprintln!("Error inferring schema: {}", e);
-                std::process::exit(1);
-            });
+            let schema = schema_or_exit(&content, &table_name);
             let replicated = args.cluster.is_some();
             let result = scanner::scan(&schema, replicated);
             let source = if args.input.as_os_str() == "-" {
@@ -207,10 +209,7 @@ fn main() {
         cli::Commands::Table(args) => {
             let table_name = table_name_from(args.name, &args.input);
             let content = read_input(&args.input);
-            let schema = inference::infer_schema(&content, &table_name).unwrap_or_else(|e| {
-                eprintln!("Error inferring schema: {}", e);
-                std::process::exit(1);
-            });
+            let schema = schema_or_exit(&content, &table_name);
 
             let replicated = matches!(args.engine.as_deref(), Some("ReplicatedMergeTree"));
             let scan_result = scanner::scan(&schema, replicated);
@@ -280,14 +279,8 @@ fn main() {
                 &args.old
             };
             let table_name = table_name_from(args.name, name_input);
-            let infer = |content: &str| {
-                inference::infer_schema(content, &table_name).unwrap_or_else(|e| {
-                    eprintln!("Error inferring schema: {}", e);
-                    std::process::exit(1);
-                })
-            };
-            let old_schema = infer(&read_input(&args.old));
-            let new_schema = infer(&read_input(&args.new));
+            let old_schema = schema_or_exit(&read_input(&args.old), &table_name);
+            let new_schema = schema_or_exit(&read_input(&args.new), &table_name);
 
             let result = diff::diff_schemas(
                 &old_schema,

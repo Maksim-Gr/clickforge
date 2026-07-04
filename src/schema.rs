@@ -2,6 +2,7 @@
 pub enum ColumnType {
     String,
     Int64,
+    UInt64,
     Float64,
     Bool,
     DateTime64,
@@ -15,6 +16,7 @@ impl ColumnType {
         match self {
             ColumnType::String => "String".to_string(),
             ColumnType::Int64 => "Int64".to_string(),
+            ColumnType::UInt64 => "UInt64".to_string(),
             ColumnType::Float64 => "Float64".to_string(),
             ColumnType::Bool => "Bool".to_string(),
             ColumnType::DateTime64 => "DateTime64(3)".to_string(),
@@ -114,6 +116,24 @@ pub struct EngineConfig {
     pub sum_columns: Vec<String>,
 }
 
+/// Quotes a ClickHouse identifier (column or table name), escaping embedded
+/// backticks by doubling them so names derived from arbitrary JSON keys can't
+/// break out of the identifier or (worse) inject SQL.
+pub fn quote_ident(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+/// Quotes a `database.table` qualified identifier, quoting each part independently.
+pub fn quote_qualified(database: &str, table: &str) -> String {
+    format!("{}.{}", quote_ident(database), quote_ident(table))
+}
+
+/// Escapes a value for embedding inside a single-quoted ClickHouse string literal
+/// (distinct from `quote_ident`: this doubles single quotes, not backticks).
+pub fn quote_string_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +149,30 @@ mod tests {
     #[test]
     fn engine_from_str_invalid() {
         assert!("InvalidEngine".parse::<TableEngine>().is_err())
+    }
+
+    #[test]
+    fn quote_ident_plain_name() {
+        assert_eq!(quote_ident("user_id"), "`user_id`");
+    }
+
+    #[test]
+    fn quote_ident_escapes_embedded_backtick() {
+        assert_eq!(quote_ident("a`b"), "`a``b`");
+    }
+
+    #[test]
+    fn quote_ident_handles_reserved_word() {
+        assert_eq!(quote_ident("order"), "`order`");
+    }
+
+    #[test]
+    fn quote_qualified_quotes_both_parts() {
+        assert_eq!(quote_qualified("raw", "events"), "`raw`.`events`");
+    }
+
+    #[test]
+    fn quote_string_literal_escapes_single_quote() {
+        assert_eq!(quote_string_literal("it's"), "it''s");
     }
 }

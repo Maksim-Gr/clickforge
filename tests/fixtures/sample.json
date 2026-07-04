@@ -1,0 +1,4 @@
+[
+  {"user_id": "u1", "event_time": "2024-03-01T12:00:00Z", "amount": 5},
+  {"user_id": "u2", "event_time": "2024-03-02T08:30:00Z", "amount": 7}
+]

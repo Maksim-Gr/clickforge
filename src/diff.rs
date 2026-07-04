@@ -1,4 +1,4 @@
-use crate::schema::{Column, InferredSchema};
+use crate::schema::{Column, InferredSchema, quote_ident};
 use std::collections::{HashMap, HashSet};
 
 pub struct Diff {
@@ -18,9 +18,9 @@ pub fn diff_schemas(
     table_name: &str,
     cluster: Option<&str>,
 ) -> Diff {
-    let t = table_name;
+    let t = quote_ident(table_name);
     let on_cluster = cluster
-        .map(|c| format!(" ON CLUSTER `{c}`"))
+        .map(|c| format!(" ON CLUSTER {}", quote_ident(c)))
         .unwrap_or_default();
 
     let old_by_name: HashMap<&str, &Column> =
@@ -35,13 +35,12 @@ pub fn diff_schemas(
         match old_by_name.get(col.name.as_str()) {
             None => {
                 let ty = col.ch_type_str();
+                let qcol = quote_ident(&col.name);
                 up_lines.push(format!(
-                    "ALTER TABLE `{t}`{on_cluster} ADD COLUMN IF NOT EXISTS `{}` {};",
-                    col.name, ty
+                    "ALTER TABLE {t}{on_cluster} ADD COLUMN IF NOT EXISTS {qcol} {ty};"
                 ));
                 down_lines.push(format!(
-                    "ALTER TABLE `{t}`{on_cluster} DROP COLUMN IF EXISTS `{}`;",
-                    col.name
+                    "ALTER TABLE {t}{on_cluster} DROP COLUMN IF EXISTS {qcol};"
                 ));
             }
             Some(old_col) if old_col.ch_type != col.ch_type || old_col.nullable != col.nullable => {
