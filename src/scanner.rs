@@ -28,7 +28,21 @@ fn is_id(name: &str) -> bool {
 }
 
 fn is_numeric(col_type: &ColumnType) -> bool {
-    matches!(col_type, ColumnType::Int64 | ColumnType::Float64)
+    matches!(
+        col_type,
+        ColumnType::Int64 | ColumnType::UInt64 | ColumnType::Float64
+    )
+}
+
+/// Picks up to one leading id field and one leading timestamp field, in that
+/// order, as a conservative default grouping/ordering key.
+fn primary_dimensions<'a>(id_fields: &[&'a str], timestamp_fields: &[&'a str]) -> Vec<&'a str> {
+    id_fields
+        .iter()
+        .take(1)
+        .chain(timestamp_fields.iter().take(1))
+        .copied()
+        .collect()
 }
 
 pub struct FieldRole {
@@ -115,8 +129,10 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
     // ReplacingMergeTree has no separate Replicated variant in this tool's scope;
     // always suggest ReplacingMergeTree and let the user pair it with ON CLUSTER.
     if !id_fields.is_empty() && !timestamp_fields.is_empty() {
-        let mut order_by: Vec<String> = id_fields.iter().take(1).map(|s| s.to_string()).collect();
-        order_by.push(timestamp_fields[0].to_string());
+        let order_by: Vec<String> = primary_dimensions(&id_fields, &timestamp_fields)
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let rationale = format!(
             "deduplicates rows by `{}` — good for upsert-like data",
             id_fields[0]
@@ -137,12 +153,7 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
         .filter(|f| f.numeric)
         .map(|f| f.name.as_str())
         .collect();
-    let dimensions: Vec<&str> = id_fields
-        .iter()
-        .take(1)
-        .chain(timestamp_fields.iter().take(1))
-        .copied()
-        .collect();
+    let dimensions: Vec<&str> = primary_dimensions(&id_fields, &timestamp_fields);
     if !numeric_fields.is_empty() && !dimensions.is_empty() {
         let order_by: Vec<String> = dimensions.iter().map(|s| s.to_string()).collect();
         let sum_columns: Vec<String> = numeric_fields.iter().map(|s| s.to_string()).collect();
@@ -227,12 +238,7 @@ pub fn print_scan(result: &ScanResult, source: &str, record_count: usize) {
     println!("To generate a migration with the chosen engine, run:");
     let input = source;
     for s in &result.suggestions {
-        let engine_name = match &s.engine {
-            TableEngine::MergeTree => "MergeTree",
-            TableEngine::ReplicatedMergeTree => "ReplicatedMergeTree",
-            TableEngine::ReplacingMergeTree => "ReplacingMergeTree",
-            TableEngine::SummingMergeTree => "SummingMergeTree",
-        };
+        let engine_name = s.engine.to_string();
         if s.order_by.is_empty() {
             println!("  clickforge table {} --engine {}", input, engine_name);
         } else {

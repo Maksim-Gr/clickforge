@@ -1,4 +1,7 @@
-use crate::schema::{ColumnType, EngineConfig, InferredSchema, TableEngine};
+use crate::schema::{
+    ColumnType, EngineConfig, InferredSchema, TableEngine, quote_ident, quote_qualified,
+    quote_string_literal,
+};
 
 pub struct Generator<'a> {
     schema: &'a InferredSchema,
@@ -29,12 +32,17 @@ impl<'a> Generator<'a> {
     pub fn generate_down(&self) -> String {
         let t = &self.schema.table_name;
         let c = &self.cluster;
+        let streams_t = quote_qualified("streams", t);
+        let streams_mv_name = quote_qualified("streams", &format!("{t}_mv"));
+        let raw_t = quote_qualified("raw", t);
+        let raw_mv_name = quote_qualified("raw", &format!("{t}_mv"));
+        let datalake_t = quote_qualified("datalake", t);
         format!(
-            "DROP TABLE IF EXISTS streams.{t} ON CLUSTER {c} SYNC;\n\
-             DROP VIEW IF EXISTS streams.{t}_mv ON CLUSTER {c} SYNC;\n\
-             DROP TABLE IF EXISTS raw.{t} ON CLUSTER {c} SYNC;\n\
-             DROP VIEW IF EXISTS raw.{t}_mv ON CLUSTER {c} SYNC;\n\
-             DROP TABLE IF EXISTS datalake.{t} ON CLUSTER {c} SYNC;"
+            "DROP TABLE IF EXISTS {streams_t} ON CLUSTER {c} SYNC;\n\
+             DROP VIEW IF EXISTS {streams_mv_name} ON CLUSTER {c} SYNC;\n\
+             DROP TABLE IF EXISTS {raw_t} ON CLUSTER {c} SYNC;\n\
+             DROP VIEW IF EXISTS {raw_mv_name} ON CLUSTER {c} SYNC;\n\
+             DROP TABLE IF EXISTS {datalake_t} ON CLUSTER {c} SYNC;"
         )
     }
 
@@ -42,22 +50,26 @@ impl<'a> Generator<'a> {
         let t = &self.schema.table_name;
         let c = &self.cluster;
         let k = &self.kafka;
+        let qt = quote_qualified("streams", t);
+        let topic = quote_string_literal(t);
         format!(
-            "CREATE TABLE IF NOT EXISTS streams.{t} ON CLUSTER {c}\n\
+            "CREATE TABLE IF NOT EXISTS {qt} ON CLUSTER {c}\n\
              (\n\
              \t`message` String\n\
              )\n\
              \tENGINE = Kafka({k}) SETTINGS kafka_topic_list =\n\
-             \t'private.{{environment}}.{t}.v1', kafka_group_name =\n\
-             \t'clickhouse-{{environment}}xdcl-{t}-shard-1', kafka_format = 'RawBLOB';"
+             \t'private.{{environment}}.{topic}.v1', kafka_group_name =\n\
+             \t'clickhouse-{{environment}}xdcl-{topic}-shard-1', kafka_format = 'RawBLOB';"
         )
     }
 
     fn raw_table(&self) -> String {
         let t = &self.schema.table_name;
         let c = &self.cluster;
+        let qt = quote_qualified("raw", t);
+        let path_t = quote_string_literal(t);
         format!(
-            "CREATE TABLE IF NOT EXISTS raw.{t} ON CLUSTER {c}\n\
+            "CREATE TABLE IF NOT EXISTS {qt} ON CLUSTER {c}\n\
              (\n\
              \t`message`       String,\n\
              \t`_key`          String,\n\
@@ -67,7 +79,7 @@ impl<'a> Generator<'a> {
              \t`_topic`        LowCardinality(String),\n\
              \t`_row_created`  DateTime DEFAULT nowInBlock()\n\
              )\n\
-             \tENGINE = ReplicatedMergeTree('/clickhouse/{{cluster}}/tables/raw/{t}/{{shard}}', '{{replica}}')\n\
+             \tENGINE = ReplicatedMergeTree('/clickhouse/{{cluster}}/tables/raw/{path_t}/{{shard}}', '{{replica}}')\n\
              \tPARTITION BY toYYYYMM(_row_created)\n\
              \tORDER BY _row_created\n\
              \tSETTINGS index_granularity = 8192;"
@@ -77,21 +89,23 @@ impl<'a> Generator<'a> {
     fn datalake_table(&self) -> String {
         let t = &self.schema.table_name;
         let c = &self.cluster;
+        let qt = quote_qualified("datalake", t);
+        let path_t = quote_string_literal(t);
         let cols: String = self
             .schema
             .columns
             .iter()
-            .map(|col| format!("\t`{}` {},\n", col.name, col.ch_type_str()))
+            .map(|col| format!("\t{} {},\n", quote_ident(&col.name), col.ch_type_str()))
             .collect();
         format!(
-            "CREATE TABLE IF NOT EXISTS datalake.{t} ON CLUSTER {c}\n\
+            "CREATE TABLE IF NOT EXISTS {qt} ON CLUSTER {c}\n\
              (\n\
              {cols}\
              \t`_timestamp_ms` DateTime64(3),\n\
              \t`_topic`        LowCardinality(String),\n\
              \t`_row_created`  DateTime DEFAULT nowInBlock()\n\
              )\n\
-             \tENGINE = ReplicatedMergeTree('/clickhouse/{{cluster}}/tables/datalake/{t}/{{shard}}', '{{replica}}')\n\
+             \tENGINE = ReplicatedMergeTree('/clickhouse/{{cluster}}/tables/datalake/{path_t}/{{shard}}', '{{replica}}')\n\
              \tPARTITION BY toYYYYMM(_timestamp_ms)\n\
              \tORDER BY _timestamp_ms\n\
              \tSETTINGS index_granularity = 8192;"
@@ -101,6 +115,9 @@ impl<'a> Generator<'a> {
     fn raw_mv(&self) -> String {
         let t = &self.schema.table_name;
         let c = &self.cluster;
+        let mv_name = quote_qualified("raw", &format!("{t}_mv"));
+        let datalake_t = quote_qualified("datalake", t);
+        let raw_t = quote_qualified("raw", t);
         let extracts: String = self
             .schema
             .columns
@@ -108,22 +125,22 @@ impl<'a> Generator<'a> {
             .map(|col| {
                 format!(
                     "\t\tJSONExtract(message, '{}', '{}') AS {},\n",
-                    col.name,
+                    quote_string_literal(&col.name),
                     col.ch_type_str(),
-                    col.name
+                    quote_ident(&col.name)
                 )
             })
             .collect();
         format!(
-            "CREATE MATERIALIZED VIEW IF NOT EXISTS raw.{t}_mv\n\
-             \tON CLUSTER {c} TO datalake.{t} AS\n\
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS {mv_name}\n\
+             \tON CLUSTER {c} TO {datalake_t} AS\n\
              SELECT * FROM (\n\
              \tSELECT\n\
              {extracts}\
              \t\t`_timestamp_ms`,\n\
              \t\t`_topic`,\n\
              \t\t`_row_created`\n\
-             \tFROM raw.{t}\n\
+             \tFROM {raw_t}\n\
              ) SETTINGS cast_keep_nullable = 1;"
         )
     }
@@ -131,10 +148,13 @@ impl<'a> Generator<'a> {
     fn streams_mv(&self) -> String {
         let t = &self.schema.table_name;
         let c = &self.cluster;
+        let mv_name = quote_qualified("streams", &format!("{t}_mv"));
+        let raw_t = quote_qualified("raw", t);
+        let streams_t = quote_qualified("streams", t);
         format!(
-            "CREATE MATERIALIZED VIEW IF NOT EXISTS streams.{t}_mv\n\
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS {mv_name}\n\
              \tON CLUSTER {c}\n\
-             \tTO raw.{t} (\n\
+             \tTO {raw_t} (\n\
              \t\t`message`        String,\n\
              \t\t`_key`           String,\n\
              \t\t`_offset`        UInt64,\n\
@@ -151,7 +171,7 @@ impl<'a> Generator<'a> {
              \tassumeNotNull(_timestamp_ms) AS _timestamp_ms,\n\
              \t_topic,\n\
              \tnowInBlock() AS _row_created\n\
-             FROM streams.{t};"
+             FROM {streams_t};"
         )
     }
 }
@@ -173,6 +193,7 @@ impl<'a> TableGenerator<'a> {
 
     pub fn generate_up(&self) -> String {
         let t = &self.schema.table_name;
+        let qt = quote_ident(t);
 
         let cluster_clause = self
             .cluster
@@ -184,7 +205,7 @@ impl<'a> TableGenerator<'a> {
             .schema
             .columns
             .iter()
-            .map(|col| format!("\t`{}` {},\n", col.name, col.ch_type_str()))
+            .map(|col| format!("\t{} {},\n", quote_ident(&col.name), col.ch_type_str()))
             .collect();
         // strip trailing comma+newline from last column
         let cols = cols.trim_end_matches(",\n").to_string() + "\n";
@@ -194,7 +215,13 @@ impl<'a> TableGenerator<'a> {
         let order_str = if self.config.order_by.is_empty() {
             "tuple()".to_string()
         } else {
-            format!("({})", self.config.order_by.join(", "))
+            let quoted: Vec<String> = self
+                .config
+                .order_by
+                .iter()
+                .map(|c| quote_ident(c))
+                .collect();
+            format!("({})", quoted.join(", "))
         };
 
         // Add PARTITION BY only when the first ORDER BY field is an actual DateTime
@@ -211,11 +238,11 @@ impl<'a> TableGenerator<'a> {
                     .iter()
                     .any(|c| &c.name == *first && c.ch_type == ColumnType::DateTime64)
             })
-            .map(|first| format!("\tPARTITION BY toYYYYMM({first})\n"))
+            .map(|first| format!("\tPARTITION BY toYYYYMM({})\n", quote_ident(first)))
             .unwrap_or_default();
 
         format!(
-            "CREATE TABLE IF NOT EXISTS {t}{cluster_clause}\n\
+            "CREATE TABLE IF NOT EXISTS {qt}{cluster_clause}\n\
              (\n\
              {cols}\
              )\n\
@@ -228,9 +255,10 @@ impl<'a> TableGenerator<'a> {
 
     pub fn generate_down(&self) -> String {
         let t = &self.schema.table_name;
+        let qt = quote_ident(t);
         match &self.cluster {
-            Some(c) => format!("DROP TABLE IF EXISTS {t} ON CLUSTER {c} SYNC;"),
-            None => format!("DROP TABLE IF EXISTS {t};"),
+            Some(c) => format!("DROP TABLE IF EXISTS {qt} ON CLUSTER {c} SYNC;"),
+            None => format!("DROP TABLE IF EXISTS {qt};"),
         }
     }
 
@@ -239,8 +267,9 @@ impl<'a> TableGenerator<'a> {
         match &self.config.engine {
             TableEngine::MergeTree => "MergeTree()".to_string(),
             TableEngine::ReplicatedMergeTree => {
+                let path_t = quote_string_literal(t);
                 format!(
-                    "ReplicatedMergeTree('/clickhouse/{{cluster}}/tables/{t}/{{shard}}', '{{replica}}')"
+                    "ReplicatedMergeTree('/clickhouse/{{cluster}}/tables/{path_t}/{{shard}}', '{{replica}}')"
                 )
             }
             TableEngine::ReplacingMergeTree => "ReplacingMergeTree()".to_string(),
@@ -248,7 +277,13 @@ impl<'a> TableGenerator<'a> {
                 if self.config.sum_columns.is_empty() {
                     "SummingMergeTree()".to_string()
                 } else {
-                    format!("SummingMergeTree({})", self.config.sum_columns.join(", "))
+                    let quoted: Vec<String> = self
+                        .config
+                        .sum_columns
+                        .iter()
+                        .map(|c| quote_ident(c))
+                        .collect();
+                    format!("SummingMergeTree({})", quoted.join(", "))
                 }
             }
         }
@@ -285,7 +320,7 @@ mod tests {
             sum_columns: vec![],
         };
         let sql = TableGenerator::new(&schema, config, None).generate_up();
-        assert!(sql.contains("PARTITION BY toYYYYMM(event_time)"));
+        assert!(sql.contains("PARTITION BY toYYYYMM(`event_time`)"));
     }
 
     #[test]
@@ -299,5 +334,28 @@ mod tests {
         };
         let sql = TableGenerator::new(&schema, config, None).generate_up();
         assert!(!sql.contains("PARTITION BY"));
+    }
+
+    #[test]
+    fn column_name_with_backtick_is_escaped_in_table_ddl() {
+        let schema = schema_with(vec![col("a`b", ColumnType::String)]);
+        let config = EngineConfig {
+            engine: TableEngine::MergeTree,
+            order_by: vec![],
+            sum_columns: vec![],
+        };
+        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        assert!(sql.contains("`a``b` String"));
+    }
+
+    #[test]
+    fn column_name_with_quote_is_escaped_in_kafka_pipeline() {
+        let schema = schema_with(vec![col("it's", ColumnType::String)]);
+        let generator = Generator::new(&schema, "cluster".to_string(), "kafka".to_string());
+        let sql = generator.generate_up();
+        // identifier position: backtick-quoted, unescaped since no backtick in name
+        assert!(sql.contains("`it's`"));
+        // JSONExtract path argument: single-quote doubled inside the string literal
+        assert!(sql.contains("JSONExtract(message, 'it''s', 'String') AS `it's`"));
     }
 }

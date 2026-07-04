@@ -249,7 +249,7 @@ Types are inferred by scanning every record and widening as needed:
 |------------|-----------------|
 | string | `Nullable(String)` |
 | ISO-8601 datetime string (`YYYY-MM-DDThh:mm:ss…`) | `Nullable(DateTime64(3))` |
-| integer | `Nullable(Int64)` |
+| integer | `Nullable(Int64)` (or `Nullable(UInt64)` for values beyond `Int64`'s range) |
 | float | `Nullable(Float64)` |
 | boolean | `Nullable(Bool)` |
 | array | `Array(T)` — element type inferred |
@@ -262,4 +262,4 @@ String columns with few distinct values across a large-enough sample are emitted
 
 If the same field appears as `Int64` in one record and `Float64` in another, it widens to `Nullable(Float64)`. Any other type conflict widens to `Nullable(String)`.
 
-A field is non-nullable only if it is present in every record. Field order in the output matches the first record that introduced each field.
+A field is non-nullable only if it is present in every record and is never JSON `null`. Field order in the output matches the first record that introduced each field.
