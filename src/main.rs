@@ -7,6 +7,7 @@ mod schema;
 
 use clap::Parser;
 use generator::{Generator, TableGenerator};
+use owo_colors::{OwoColorize, Stream::Stderr, Stream::Stdout, Style};
 use std::fs;
 use std::path::Path;
 
@@ -20,14 +21,14 @@ fn print_schema_summary(schema: &schema::InferredSchema) {
     eprintln!(
         "{} columns inferred from {}\n",
         schema.columns.len(),
-        schema.table_name
+        schema.table_name.if_supports_color(Stderr, |t| t.bold())
     );
     for col in &schema.columns {
+        let name = format!("{:<width$}", col.name, width = max_len);
         eprintln!(
-            "  {:<width$}  {}",
-            col.name,
-            col.ch_type.as_str(),
-            width = max_len
+            "  {}  {}",
+            name.if_supports_color(Stderr, |t| t.bold()),
+            col.ch_type.as_str().if_supports_color(Stderr, |t| t.cyan())
         );
     }
     eprintln!();
@@ -36,14 +37,26 @@ fn print_schema_summary(schema: &schema::InferredSchema) {
 fn table_name_from(name: Option<String>, input: &Path) -> String {
     name.unwrap_or_else(|| {
         if input.as_os_str() == "-" {
-            eprintln!("Note: reading from stdin; defaulting table name to `table` (pass --name to override).");
+            let note = "Note:"
+                .if_supports_color(Stderr, |t| t.style(Style::new().cyan().bold()))
+                .to_string();
+            eprintln!(
+                "{} reading from stdin; defaulting table name to `table` (pass --name to override).",
+                note
+            );
             return "table".to_string();
         }
         input
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| {
-                eprintln!("Error: could not derive a table name from {:?}; pass --name", input);
+                let error = "Error:"
+                    .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+                    .to_string();
+                eprintln!(
+                    "{} could not derive a table name from {:?}; pass --name",
+                    error, input
+                );
                 std::process::exit(1);
             })
     })
@@ -57,7 +70,10 @@ fn read_input(path: &Path) -> String {
         std::io::stdin()
             .read_to_string(&mut buf)
             .unwrap_or_else(|e| {
-                eprintln!("Error reading stdin: {}", e);
+                let error = "Error:"
+                    .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+                    .to_string();
+                eprintln!("{} reading stdin: {}", error, e);
                 std::process::exit(1);
             });
         buf
@@ -68,7 +84,10 @@ fn read_input(path: &Path) -> String {
 
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("Error reading {:?}: {}", path, e);
+        let error = "Error:"
+            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+            .to_string();
+        eprintln!("{} reading {:?}: {}", error, path, e);
         std::process::exit(1);
     })
 }
@@ -76,7 +95,10 @@ fn read_file(path: &Path) -> String {
 /// Infers a schema from already-read content, or prints an error and exits(1).
 fn schema_or_exit(content: &str, table_name: &str) -> schema::InferredSchema {
     inference::infer_schema(content, table_name).unwrap_or_else(|e| {
-        eprintln!("Error inferring schema: {}", e);
+        let error = "Error:"
+            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+            .to_string();
+        eprintln!("{} inferring schema: {}", error, e);
         std::process::exit(1);
     })
 }
@@ -132,7 +154,8 @@ fn maybe_generate_interactively(
     }
 
     let n = result.suggestions.len();
-    print!("\nPick an engine to generate [1-{}, Enter to skip]: ", n);
+    let prompt = format!("\nPick an engine to generate [1-{}, Enter to skip]: ", n);
+    print!("{}", prompt.if_supports_color(Stdout, |t| t.bold()));
     let _ = std::io::stdout().flush();
 
     let mut line = String::new();
@@ -160,16 +183,25 @@ fn write_migrations(up: String, down: String, table_name: &str, output_dir: &Pat
     let down_path = output_dir.join(format!("{}_down.sql", table_name));
 
     fs::write(&up_path, up).unwrap_or_else(|e| {
-        eprintln!("Error writing {:?}: {}", up_path, e);
+        let error = "Error:"
+            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+            .to_string();
+        eprintln!("{} writing {:?}: {}", error, up_path, e);
         std::process::exit(1);
     });
     fs::write(&down_path, down).unwrap_or_else(|e| {
-        eprintln!("Error writing {:?}: {}", down_path, e);
+        let error = "Error:"
+            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+            .to_string();
+        eprintln!("{} writing {:?}: {}", error, down_path, e);
         std::process::exit(1);
     });
 
-    eprintln!("Written: {}", up_path.display());
-    eprintln!("Written: {}", down_path.display());
+    let written = "Written:"
+        .if_supports_color(Stderr, |t| t.style(Style::new().green().bold()))
+        .to_string();
+    eprintln!("{} {}", written, up_path.display());
+    eprintln!("{} {}", written, down_path.display());
 }
 
 fn main() {
@@ -216,7 +248,10 @@ fn main() {
 
             let engine_config = if let Some(engine_str) = args.engine {
                 let engine: schema::TableEngine = engine_str.parse().unwrap_or_else(|e| {
-                    eprintln!("Error: {}", e);
+                    let error = "Error:"
+                        .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+                        .to_string();
+                    eprintln!("{} {}", error, e);
                     std::process::exit(1);
                 });
                 // order_by: use --order-by flag if given, else take from scanner suggestion
@@ -270,7 +305,10 @@ fn main() {
 
         cli::Commands::Diff(args) => {
             if args.old.as_os_str() == "-" && args.new.as_os_str() == "-" {
-                eprintln!("Error: only one of <OLD> and <NEW> can be '-' (stdin).");
+                let error = "Error:"
+                    .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+                    .to_string();
+                eprintln!("{} only one of <OLD> and <NEW> can be '-' (stdin).", error);
                 std::process::exit(1);
             }
             let name_input = if args.new.as_os_str() != "-" {
@@ -289,7 +327,10 @@ fn main() {
                 args.cluster.as_deref(),
             );
             for w in &result.warnings {
-                eprintln!("Warning: {}", w);
+                let warning = "Warning:"
+                    .if_supports_color(Stderr, |t| t.style(Style::new().yellow().bold()))
+                    .to_string();
+                eprintln!("{} {}", warning, w);
             }
             if result.up.is_empty() {
                 if result.warnings.is_empty() {
