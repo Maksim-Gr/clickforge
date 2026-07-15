@@ -1,6 +1,6 @@
 [package]
 name = "clickforge"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Generate Kafka→ClickHouse ingestion pipeline migrations from a JSON sample"
 repository = "https://github.com/Maksim-Gr/clickforge"
