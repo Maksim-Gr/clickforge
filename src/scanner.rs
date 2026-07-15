@@ -248,7 +248,8 @@ pub fn print_scan(result: &ScanResult, source: &str, record_count: usize) {
 
     println!(
         "{}",
-        "To generate a migration with the chosen engine, run:".if_supports_color(Stdout, |t| t.bold())
+        "To generate a migration with the chosen engine, run:"
+            .if_supports_color(Stdout, |t| t.bold())
     );
     let input = source;
     for s in &result.suggestions {

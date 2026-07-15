@@ -28,9 +28,7 @@ fn print_schema_summary(schema: &schema::InferredSchema) {
         eprintln!(
             "  {}  {}",
             name.if_supports_color(Stderr, |t| t.bold()),
-            col.ch_type
-                .as_str()
-                .if_supports_color(Stderr, |t| t.cyan())
+            col.ch_type.as_str().if_supports_color(Stderr, |t| t.cyan())
         );
     }
     eprintln!();
