@@ -1,5 +1,12 @@
+use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().bold())
+    .usage(AnsiColor::Green.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default().bold())
+    .placeholder(AnsiColor::Cyan.on_default());
 
 #[derive(Parser, Debug)]
 #[command(
@@ -7,7 +14,8 @@ use std::path::PathBuf;
     about = "Generate a Kafka→ClickHouse ingestion pipeline (and helper migrations) from a JSON sample",
     long_about = "Generate the Kafka→ClickHouse ingestion pipeline from a JSON sample — the streams/raw/datalake tables and the materialized views that connect them.\n\nCommands:\n  kafka    Generate the full Kafka→ClickHouse ingestion pipeline (primary)\n  scan     Helper: inspect fields and pick an engine\n  table    Helper: generate a single CREATE TABLE migration\n  diff     Helper: generate ALTER TABLE migrations as the schema evolves\n\nTip: run `clickforge kafka <file>` to generate the whole pipeline.",
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "EXAMPLES:\n  clickforge kafka video_events.json          Generate the full Kafka→ClickHouse ingestion pipeline\n  clickforge scan video_events.json           Helper: inspect fields, suggest engines, then pick one to generate\n  clickforge table video_events.json          Helper: generate a single CREATE TABLE migration\n  clickforge diff old.json new.json -n events Helper: generate an additive ALTER TABLE migration\n\nNew here? Run `clickforge kafka <file>` to generate the pipeline."
+    after_help = "EXAMPLES:\n  clickforge kafka video_events.json          Generate the full Kafka→ClickHouse ingestion pipeline\n  clickforge scan video_events.json           Helper: inspect fields, suggest engines, then pick one to generate\n  clickforge table video_events.json          Helper: generate a single CREATE TABLE migration\n  clickforge diff old.json new.json -n events Helper: generate an additive ALTER TABLE migration\n\nNew here? Run `clickforge kafka <file>` to generate the pipeline.",
+    styles = STYLES
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -28,7 +36,7 @@ pub enum Commands {
 
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge kafka video_events.json\n  clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/"
+    after_help = "EXAMPLES:\n  clickforge kafka video_events.json                              Generate the pipeline, writing migration files\n  clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/\n                                                                   Override table/cluster/kafka names and output dir\n  clickforge kafka video_events.json --stdout                     Print migrations instead of writing files\n  cat events.ndjson | clickforge kafka - -n events                Read NDJSON from stdin"
 )]
 pub struct KafkaArgs {
     /// Path to a JSON array or NDJSON file (or `-` for stdin)
@@ -52,7 +60,7 @@ pub struct KafkaArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge diff video_events.json video_events_v2.json -n video_events"
+    after_help = "EXAMPLES:\n  clickforge diff video_events.json video_events_v2.json -n video_events  Generate an additive ALTER TABLE migration\n  clickforge diff old.json new.json -c my_cluster                        Add ON CLUSTER to the ALTER statements\n  clickforge diff old.json new.json --stdout                             Print migrations instead of writing files"
 )]
 pub struct DiffArgs {
     /// Path to the existing/old JSON sample (or `-` for stdin)
@@ -75,7 +83,7 @@ pub struct DiffArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge scan video_events.json\n  clickforge scan video_events.json -c my_cluster\n\nIn a terminal, scan ends by offering to generate a migration from a suggested engine."
+    after_help = "EXAMPLES:\n  clickforge scan video_events.json               Inspect fields and suggest engines\n  clickforge scan video_events.json -c my_cluster  Include ReplicatedMergeTree in the suggestions\n\nIn a terminal, scan ends by offering to generate a migration from a suggested engine."
 )]
 pub struct ScanArgs {
     /// Path to a JSON array or NDJSON file (or `-` for stdin)
@@ -90,7 +98,7 @@ pub struct ScanArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge table video_events.json\n  clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster"
+    after_help = "EXAMPLES:\n  clickforge table video_events.json                                        Generate a CREATE TABLE migration, engine inferred\n  clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster\n                                                                             Force an engine, required for ReplicatedMergeTree\n  clickforge table video_events.json --order-by 'id,created_at'             Override the inferred ORDER BY\n  clickforge table video_events.json --stdout                              Print migrations instead of writing files"
 )]
 pub struct TableArgs {
     /// Path to a JSON array or NDJSON file (or `-` for stdin)

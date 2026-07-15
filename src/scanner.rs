@@ -1,4 +1,5 @@
 use crate::schema::{ColumnType, EngineConfig, InferredSchema, TableEngine};
+use owo_colors::{OwoColorize, Stream::Stdout, Style};
 
 const TIMESTAMP_SUFFIXES: &[&str] = &["_at", "_time", "_date"];
 const TIMESTAMP_EXACT: &[&str] = &[
@@ -177,12 +178,13 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
 }
 
 pub fn print_scan(result: &ScanResult, source: &str, record_count: usize) {
-    println!(
+    let header = format!(
         "Field analysis: {}  ({} records, {} fields)\n",
         source,
         record_count,
         result.fields.len()
     );
+    println!("{}", header.if_supports_color(Stdout, |t| t.bold()));
 
     let name_w = result
         .fields
@@ -208,21 +210,29 @@ pub fn print_scan(result: &ScanResult, source: &str, record_count: usize) {
         } else {
             ""
         };
+        let name = format!("{:<width$}", f.name, width = name_w);
+        let ch_type = format!("{:<width$}", f.ch_type, width = type_w);
         println!(
-            "  {:<nw$}  {:<tw$}  {}{}",
-            f.name,
-            f.ch_type,
-            req,
-            role,
-            nw = name_w,
-            tw = type_w,
+            "  {}  {}  {}{}",
+            name,
+            ch_type.if_supports_color(Stdout, |t| t.cyan()),
+            req.if_supports_color(Stdout, |t| t.dimmed()),
+            role.if_supports_color(Stdout, |t| t.green()),
         );
     }
 
-    println!("\nSuggested engines:\n");
+    println!(
+        "\n{}\n",
+        "Suggested engines:".if_supports_color(Stdout, |t| t.bold())
+    );
 
     for (i, s) in result.suggestions.iter().enumerate() {
-        println!("  {}. {}", i + 1, s.engine);
+        println!(
+            "  {}. {}",
+            i + 1,
+            s.engine
+                .if_supports_color(Stdout, |t| t.style(Style::new().cyan().bold()))
+        );
         let order_str = if s.order_by.is_empty() {
             "tuple()".to_string()
         } else {
@@ -232,23 +242,28 @@ pub fn print_scan(result: &ScanResult, source: &str, record_count: usize) {
         if !s.sum_columns.is_empty() {
             println!("     SUM COLUMNS ({})", s.sum_columns.join(", "));
         }
-        println!("     → {}\n", s.rationale);
+        let rationale = format!("     → {}\n", s.rationale);
+        println!("{}", rationale.if_supports_color(Stdout, |t| t.dimmed()));
     }
 
-    println!("To generate a migration with the chosen engine, run:");
+    println!(
+        "{}",
+        "To generate a migration with the chosen engine, run:".if_supports_color(Stdout, |t| t.bold())
+    );
     let input = source;
     for s in &result.suggestions {
         let engine_name = s.engine.to_string();
-        if s.order_by.is_empty() {
-            println!("  clickforge table {} --engine {}", input, engine_name);
+        let cmd = if s.order_by.is_empty() {
+            format!("  clickforge table {} --engine {}", input, engine_name)
         } else {
-            println!(
+            format!(
                 "  clickforge table {} --engine {} --order-by {}",
                 input,
                 engine_name,
                 s.order_by.join(",")
-            );
-        }
+            )
+        };
+        println!("{}", cmd.if_supports_color(Stdout, |t| t.cyan()));
     }
 }
 
