@@ -205,6 +205,16 @@ fn write_migrations(up: String, down: String, table_name: &str, output_dir: &Pat
 }
 
 fn main() {
+    let raw_args: Vec<String> = std::env::args().collect();
+    if raw_args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        let mut help_args = vec![raw_args[0].clone()];
+        if let Some(sub) = raw_args.iter().skip(1).find(|a| !a.starts_with('-')) {
+            help_args.push(sub.clone());
+        }
+        help_args.push("--help".to_string());
+        cli::Cli::parse_from(help_args);
+    }
+
     let cli = cli::Cli::parse();
 
     match cli.command {
