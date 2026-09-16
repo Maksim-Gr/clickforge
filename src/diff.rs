@@ -19,8 +19,10 @@ pub fn diff_schemas(
     cluster: Option<&str>,
 ) -> Diff {
     let t = quote_ident(table_name);
+    // Cluster names are config-defined labels, not identifiers derived from
+    // arbitrary input, and are left unquoted for consistency with generator.rs.
     let on_cluster = cluster
-        .map(|c| format!(" ON CLUSTER {}", quote_ident(c)))
+        .map(|c| format!(" ON CLUSTER {}", c))
         .unwrap_or_default();
 
     let old_by_name: HashMap<&str, &Column> =
@@ -167,6 +169,6 @@ mod tests {
         let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1,"b":2}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", Some("ck"));
-        assert!(d.up.contains("ON CLUSTER `ck`"));
+        assert!(d.up.contains("ON CLUSTER ck"));
     }
 }
