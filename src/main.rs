@@ -11,6 +11,15 @@ use owo_colors::{OwoColorize, Stream::Stderr, Stream::Stdout, Style};
 use std::fs;
 use std::path::Path;
 
+/// Prints `Error: {msg}` to stderr and exits the process with status 1.
+fn die(msg: impl std::fmt::Display) -> ! {
+    let error = "Error:"
+        .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
+        .to_string();
+    eprintln!("{} {}", error, msg);
+    std::process::exit(1);
+}
+
 fn print_schema_summary(schema: &schema::InferredSchema) {
     let max_len = schema
         .columns
@@ -50,14 +59,10 @@ fn table_name_from(name: Option<String>, input: &Path) -> String {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| {
-                let error = "Error:"
-                    .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-                    .to_string();
-                eprintln!(
-                    "{} could not derive a table name from {:?}; pass --name",
-                    error, input
-                );
-                std::process::exit(1);
+                die(format!(
+                    "could not derive a table name from {:?}; pass --name",
+                    input
+                ))
             })
     })
 }
@@ -69,13 +74,7 @@ fn read_input(path: &Path) -> String {
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
-            .unwrap_or_else(|e| {
-                let error = "Error:"
-                    .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-                    .to_string();
-                eprintln!("{} reading stdin: {}", error, e);
-                std::process::exit(1);
-            });
+            .unwrap_or_else(|e| die(format!("reading stdin: {}", e)));
         buf
     } else {
         read_file(path)
@@ -83,24 +82,13 @@ fn read_input(path: &Path) -> String {
 }
 
 fn read_file(path: &Path) -> String {
-    fs::read_to_string(path).unwrap_or_else(|e| {
-        let error = "Error:"
-            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-            .to_string();
-        eprintln!("{} reading {:?}: {}", error, path, e);
-        std::process::exit(1);
-    })
+    fs::read_to_string(path).unwrap_or_else(|e| die(format!("reading {:?}: {}", path, e)))
 }
 
 /// Infers a schema from already-read content, or prints an error and exits(1).
 fn schema_or_exit(content: &str, table_name: &str) -> schema::InferredSchema {
-    inference::infer_schema(content, table_name).unwrap_or_else(|e| {
-        let error = "Error:"
-            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-            .to_string();
-        eprintln!("{} inferring schema: {}", error, e);
-        std::process::exit(1);
-    })
+    inference::infer_schema(content, table_name)
+        .unwrap_or_else(|e| die(format!("inferring schema: {}", e)))
 }
 
 /// Prints both migrations to stdout, separated by `-- up` / `-- down` headers.
@@ -182,20 +170,8 @@ fn write_migrations(up: String, down: String, table_name: &str, output_dir: &Pat
     let up_path = output_dir.join(format!("{}_up.sql", table_name));
     let down_path = output_dir.join(format!("{}_down.sql", table_name));
 
-    fs::write(&up_path, up).unwrap_or_else(|e| {
-        let error = "Error:"
-            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-            .to_string();
-        eprintln!("{} writing {:?}: {}", error, up_path, e);
-        std::process::exit(1);
-    });
-    fs::write(&down_path, down).unwrap_or_else(|e| {
-        let error = "Error:"
-            .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-            .to_string();
-        eprintln!("{} writing {:?}: {}", error, down_path, e);
-        std::process::exit(1);
-    });
+    fs::write(&up_path, up).unwrap_or_else(|e| die(format!("writing {:?}: {}", up_path, e)));
+    fs::write(&down_path, down).unwrap_or_else(|e| die(format!("writing {:?}: {}", down_path, e)));
 
     let written = "Written:"
         .if_supports_color(Stderr, |t| t.style(Style::new().green().bold()))
@@ -257,13 +233,7 @@ fn main() {
             let scan_result = scanner::scan(&schema, replicated);
 
             let engine_config = if let Some(engine_str) = args.engine {
-                let engine: schema::TableEngine = engine_str.parse().unwrap_or_else(|e| {
-                    let error = "Error:"
-                        .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-                        .to_string();
-                    eprintln!("{} {}", error, e);
-                    std::process::exit(1);
-                });
+                let engine: schema::TableEngine = engine_str.parse().unwrap_or_else(|e| die(e));
                 // order_by: use --order-by flag if given, else take from scanner suggestion
                 let order_by = if let Some(ob) = args.order_by {
                     ob.split(',').map(|s| s.trim().to_string()).collect()
@@ -315,11 +285,7 @@ fn main() {
 
         cli::Commands::Diff(args) => {
             if args.old.as_os_str() == "-" && args.new.as_os_str() == "-" {
-                let error = "Error:"
-                    .if_supports_color(Stderr, |t| t.style(Style::new().red().bold()))
-                    .to_string();
-                eprintln!("{} only one of <OLD> and <NEW> can be '-' (stdin).", error);
-                std::process::exit(1);
+                die("only one of <OLD> and <NEW> can be '-' (stdin).");
             }
             let name_input = if args.new.as_os_str() != "-" {
                 &args.new
