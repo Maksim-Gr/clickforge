@@ -299,6 +299,7 @@ mod tests {
         InferredSchema {
             table_name: "t".to_string(),
             columns,
+            record_count: 1,
         }
     }
 

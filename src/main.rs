@@ -2,6 +2,7 @@ mod cli;
 mod diff;
 mod generator;
 mod inference;
+mod sample;
 mod scanner;
 mod schema;
 
@@ -43,52 +44,19 @@ fn print_schema_summary(schema: &schema::InferredSchema) {
     eprintln!();
 }
 
-fn table_name_from(name: Option<String>, input: &Path) -> String {
-    name.unwrap_or_else(|| {
-        if input.as_os_str() == "-" {
-            let note = "Note:"
-                .if_supports_color(Stderr, |t| t.style(Style::new().cyan().bold()))
-                .to_string();
-            eprintln!(
-                "{} reading from stdin; defaulting table name to `table` (pass --name to override).",
-                note
-            );
-            return "table".to_string();
-        }
-        input
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| {
-                die(format!(
-                    "could not derive a table name from {:?}; pass --name",
-                    input
-                ))
-            })
-    })
-}
-
-/// Reads the input source: stdin when `path` is `-`, otherwise the file at `path`.
-fn read_input(path: &Path) -> String {
-    if path.as_os_str() == "-" {
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .unwrap_or_else(|e| die(format!("reading stdin: {}", e)));
-        buf
-    } else {
-        read_file(path)
+/// Loads a JSON sample from `input` (stdin when `-`), or prints an error and exits(1).
+fn load_sample(input: &Path, name: Option<String>) -> sample::Sample {
+    let sample = sample::load(input, name, std::io::stdin()).unwrap_or_else(|e| die(e));
+    if sample.defaulted_name {
+        let note = "Note:"
+            .if_supports_color(Stderr, |t| t.style(Style::new().cyan().bold()))
+            .to_string();
+        eprintln!(
+            "{} reading from stdin; defaulting table name to `{}` (pass --name to override).",
+            note, sample.schema.table_name
+        );
     }
-}
-
-fn read_file(path: &Path) -> String {
-    fs::read_to_string(path).unwrap_or_else(|e| die(format!("reading {:?}: {}", path, e)))
-}
-
-/// Infers a schema from already-read content, or prints an error and exits(1).
-fn schema_or_exit(content: &str, table_name: &str) -> schema::InferredSchema {
-    inference::infer_schema(content, table_name)
-        .unwrap_or_else(|e| die(format!("inferring schema: {}", e)))
+    sample
 }
 
 /// Prints both migrations to stdout, separated by `-- up` / `-- down` headers.
@@ -129,15 +97,12 @@ fn generate_table_migration(
 /// terminal reading a real file; piped/scripted runs are left untouched.
 fn maybe_generate_interactively(
     result: &scanner::ScanResult,
-    schema: &schema::InferredSchema,
+    sample: &sample::Sample,
     cluster: Option<String>,
-    table_name: &str,
-    input: &Path,
 ) {
     use std::io::{IsTerminal, Write};
 
-    if result.suggestions.is_empty() || input.as_os_str() == "-" || !std::io::stdin().is_terminal()
-    {
+    if result.suggestions.is_empty() || sample.from_stdin || !std::io::stdin().is_terminal() {
         return;
     }
 
@@ -156,13 +121,14 @@ fn maybe_generate_interactively(
     };
 
     let engine = result.suggestions[choice - 1].engine.clone();
+    let schema = &sample.schema;
     let engine_config = scanner::select_engine(schema, Some(engine), None, cluster.as_deref())
         .unwrap_or_else(|e| die(e));
     generate_table_migration(
         schema,
         engine_config,
         cluster,
-        table_name,
+        &schema.table_name,
         Path::new("."),
         false,
     );
@@ -197,39 +163,30 @@ fn main() {
 
     match cli.command {
         cli::Commands::Kafka(args) => {
-            let table_name = table_name_from(args.name, &args.input);
-            let content = read_input(&args.input);
-            let schema = schema_or_exit(&content, &table_name);
+            let sample = load_sample(&args.input, args.name);
+            let schema = sample.schema;
+            let table_name = &schema.table_name;
             print_schema_summary(&schema);
             let generator = Generator::new(&schema, args.cluster, args.kafka);
             emit_migrations(
                 generator.generate_up(),
                 generator.generate_down(),
-                &table_name,
+                table_name,
                 &args.output_dir,
                 args.stdout,
             );
         }
 
         cli::Commands::Scan(args) => {
-            let table_name = table_name_from(args.name, &args.input);
-            let content = read_input(&args.input);
-            let schema = schema_or_exit(&content, &table_name);
+            let sample = load_sample(&args.input, args.name);
             let replicated = args.cluster.is_some();
-            let result = scanner::scan(&schema, replicated);
-            let source = if args.input.as_os_str() == "-" {
-                "<stdin>".to_string()
-            } else {
-                args.input.display().to_string()
-            };
-            scanner::print_scan(&result, &source, inference::record_count(&content));
-            maybe_generate_interactively(&result, &schema, args.cluster, &table_name, &args.input);
+            let result = scanner::scan(&sample.schema, replicated);
+            scanner::print_scan(&result, &sample.label, sample.schema.record_count);
+            maybe_generate_interactively(&result, &sample, args.cluster);
         }
 
         cli::Commands::Table(args) => {
-            let table_name = table_name_from(args.name, &args.input);
-            let content = read_input(&args.input);
-            let schema = schema_or_exit(&content, &table_name);
+            let schema = load_sample(&args.input, args.name).schema;
 
             let engine: Option<schema::TableEngine> =
                 args.engine.map(|e| e.parse().unwrap_or_else(|e| die(e)));
@@ -245,29 +202,21 @@ fn main() {
                 &schema,
                 engine_config,
                 args.cluster,
-                &table_name,
+                &schema.table_name,
                 &args.output_dir,
                 args.stdout,
             );
         }
 
         cli::Commands::Diff(args) => {
-            if args.old.as_os_str() == "-" && args.new.as_os_str() == "-" {
-                die("only one of <OLD> and <NEW> can be '-' (stdin).");
-            }
-            let name_input = if args.new.as_os_str() != "-" {
-                &args.new
-            } else {
-                &args.old
-            };
-            let table_name = table_name_from(args.name, name_input);
-            let old_schema = schema_or_exit(&read_input(&args.old), &table_name);
-            let new_schema = schema_or_exit(&read_input(&args.new), &table_name);
+            let (old, new) = sample::load_pair(&args.old, &args.new, args.name, std::io::stdin())
+                .unwrap_or_else(|e| die(e));
+            let table_name = &new.schema.table_name;
 
             let result = diff::diff_schemas(
-                &old_schema,
-                &new_schema,
-                &table_name,
+                &old.schema,
+                &new.schema,
+                table_name,
                 args.cluster.as_deref(),
             );
             for w in &result.warnings {
