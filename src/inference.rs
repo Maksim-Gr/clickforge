@@ -9,8 +9,7 @@ const CARDINALITY_CAP: usize = 100;
 const MIN_RECORDS_FOR_LC: usize = 20;
 
 /// Parses input as a JSON array or as a stream of JSON objects (NDJSON or
-/// concatenated pretty-printed). Shared by `infer_schema` and `record_count` so
-/// the two always agree on how many records the input contains.
+/// concatenated pretty-printed).
 fn parse_values(content: &str) -> Result<Vec<Value>, String> {
     let trimmed = content.trim();
     if trimmed.starts_with('[') {
@@ -99,11 +98,8 @@ pub fn infer_schema(content: &str, table_name: &str) -> Result<InferredSchema, S
     Ok(InferredSchema {
         table_name: table_name.to_string(),
         columns,
+        record_count,
     })
-}
-
-pub fn record_count(content: &str) -> usize {
-    parse_values(content).map(|v| v.len()).unwrap_or(0)
 }
 
 fn infer_type(val: &Value) -> ColumnType {
@@ -382,9 +378,9 @@ mod tests {
     }
 
     #[test]
-    fn record_count_matches_infer_schema_record_count() {
-        let content = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}";
-        assert_eq!(record_count(content), 3);
-        assert_eq!(infer_schema(content, "t").unwrap().columns.len(), 1);
+    fn infer_schema_counts_records() {
+        let schema = infer_schema("{\"a\":1}\n{\"a\":2}\n{\"a\":3}", "t").unwrap();
+        assert_eq!(schema.record_count, 3);
+        assert_eq!(schema.columns.len(), 1);
     }
 }

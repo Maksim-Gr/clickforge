@@ -70,6 +70,7 @@ impl Column {
 pub struct InferredSchema {
     pub table_name: String,
     pub columns: Vec<Column>,
+    pub record_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
