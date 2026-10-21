@@ -1,16 +1,40 @@
 use crate::schema::{
-    ColumnType, EngineConfig, InferredSchema, TableEngine, quote_ident, quote_qualified,
+    ColumnType, EngineConfig, InferredSchema, Migration, TableEngine, quote_ident, quote_qualified,
     quote_string_literal,
 };
 
-pub struct Generator<'a> {
+/// The Kafka pipeline migration for `schema`'s table.
+pub fn kafka_pipeline(schema: &InferredSchema, cluster: String, kafka: String) -> Migration {
+    let generator = Generator::new(schema, cluster, kafka);
+    Migration {
+        name: schema.table_name.clone(),
+        up: generator.generate_up(),
+        down: generator.generate_down(),
+    }
+}
+
+/// A single CREATE TABLE / DROP TABLE migration for `schema`'s table.
+pub fn table_migration(
+    schema: &InferredSchema,
+    config: EngineConfig,
+    cluster: Option<String>,
+) -> Migration {
+    let generator = TableGenerator::new(schema, config, cluster);
+    Migration {
+        name: schema.table_name.clone(),
+        up: generator.generate_up(),
+        down: generator.generate_down(),
+    }
+}
+
+struct Generator<'a> {
     schema: &'a InferredSchema,
     cluster: String,
     kafka: String,
 }
 
 impl<'a> Generator<'a> {
-    pub fn new(schema: &'a InferredSchema, cluster: String, kafka: String) -> Self {
+    fn new(schema: &'a InferredSchema, cluster: String, kafka: String) -> Self {
         Generator {
             schema,
             cluster,
@@ -18,7 +42,7 @@ impl<'a> Generator<'a> {
         }
     }
 
-    pub fn generate_up(&self) -> String {
+    fn generate_up(&self) -> String {
         [
             self.streams_table(),
             self.raw_table(),
@@ -29,7 +53,7 @@ impl<'a> Generator<'a> {
         .join("\n\n")
     }
 
-    pub fn generate_down(&self) -> String {
+    fn generate_down(&self) -> String {
         let t = &self.schema.table_name;
         let c = &self.cluster;
         let streams_t = quote_qualified("streams", t);
@@ -176,14 +200,14 @@ impl<'a> Generator<'a> {
     }
 }
 
-pub struct TableGenerator<'a> {
+struct TableGenerator<'a> {
     schema: &'a InferredSchema,
     config: EngineConfig,
     cluster: Option<String>,
 }
 
 impl<'a> TableGenerator<'a> {
-    pub fn new(schema: &'a InferredSchema, config: EngineConfig, cluster: Option<String>) -> Self {
+    fn new(schema: &'a InferredSchema, config: EngineConfig, cluster: Option<String>) -> Self {
         TableGenerator {
             schema,
             config,
@@ -191,7 +215,7 @@ impl<'a> TableGenerator<'a> {
         }
     }
 
-    pub fn generate_up(&self) -> String {
+    fn generate_up(&self) -> String {
         let t = &self.schema.table_name;
         let qt = quote_ident(t);
 
@@ -253,7 +277,7 @@ impl<'a> TableGenerator<'a> {
         )
     }
 
-    pub fn generate_down(&self) -> String {
+    fn generate_down(&self) -> String {
         let t = &self.schema.table_name;
         let qt = quote_ident(t);
         match &self.cluster {
@@ -320,7 +344,7 @@ mod tests {
             order_by: vec!["event_time".to_string()],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        let sql = table_migration(&schema, config, None).up;
         assert!(sql.contains("PARTITION BY toYYYYMM(`event_time`)"));
     }
 
@@ -333,7 +357,7 @@ mod tests {
             order_by: vec!["event_date".to_string()],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        let sql = table_migration(&schema, config, None).up;
         assert!(!sql.contains("PARTITION BY"));
     }
 
@@ -345,7 +369,7 @@ mod tests {
             order_by: vec![],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        let sql = table_migration(&schema, config, None).up;
         assert!(sql.contains("`a``b` String"));
     }
 
@@ -357,7 +381,7 @@ mod tests {
             order_by: vec![],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        let sql = table_migration(&schema, config, None).up;
         assert!(sql.contains(
             "ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/t/{shard}', '{replica}')"
         ));
@@ -371,7 +395,7 @@ mod tests {
             order_by: vec![],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        let sql = table_migration(&schema, config, None).up;
         assert!(sql.contains("ENGINE = ReplacingMergeTree()"));
     }
 
@@ -383,7 +407,7 @@ mod tests {
             order_by: vec![],
             sum_columns: vec!["amount".to_string()],
         };
-        let sql = TableGenerator::new(&schema, config, None).generate_up();
+        let sql = table_migration(&schema, config, None).up;
         assert!(sql.contains("ENGINE = SummingMergeTree(`amount`)"));
     }
 
@@ -395,7 +419,7 @@ mod tests {
             order_by: vec![],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, Some("ck".to_string())).generate_down();
+        let sql = table_migration(&schema, config, Some("ck".to_string())).down;
         assert_eq!(sql, "DROP TABLE IF EXISTS `t` ON CLUSTER ck SYNC;");
     }
 
@@ -407,7 +431,7 @@ mod tests {
             order_by: vec![],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, None).generate_down();
+        let sql = table_migration(&schema, config, None).down;
         assert_eq!(sql, "DROP TABLE IF EXISTS `t`;");
     }
 
@@ -419,18 +443,32 @@ mod tests {
             order_by: vec![],
             sum_columns: vec![],
         };
-        let sql = TableGenerator::new(&schema, config, Some("ck".to_string())).generate_up();
+        let sql = table_migration(&schema, config, Some("ck".to_string())).up;
         assert!(sql.contains("`t` ON CLUSTER ck"));
     }
 
     #[test]
     fn column_name_with_quote_is_escaped_in_kafka_pipeline() {
         let schema = schema_with(vec![col("it's", ColumnType::String)]);
-        let generator = Generator::new(&schema, "cluster".to_string(), "kafka".to_string());
-        let sql = generator.generate_up();
+        let sql = kafka_pipeline(&schema, "cluster".to_string(), "kafka".to_string()).up;
         // identifier position: backtick-quoted, unescaped since no backtick in name
         assert!(sql.contains("`it's`"));
         // JSONExtract path argument: single-quote doubled inside the string literal
         assert!(sql.contains("JSONExtract(message, 'it''s', 'String') AS `it's`"));
+    }
+
+    #[test]
+    fn migrations_are_named_after_the_table() {
+        let schema = schema_with(vec![col("a", ColumnType::String)]);
+        let config = EngineConfig {
+            engine: TableEngine::MergeTree,
+            order_by: vec![],
+            sum_columns: vec![],
+        };
+        assert_eq!(table_migration(&schema, config, None).name, "t");
+        assert_eq!(
+            kafka_pipeline(&schema, "c".to_string(), "k".to_string()).name,
+            "t"
+        );
     }
 }

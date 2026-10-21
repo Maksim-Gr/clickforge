@@ -1,9 +1,9 @@
-use crate::schema::{Column, InferredSchema, quote_ident};
+use crate::schema::{Column, InferredSchema, Migration, quote_ident};
 use std::collections::{HashMap, HashSet};
 
 pub struct Diff {
-    pub up: String,
-    pub down: String,
+    /// `None` when there are no columns to add.
+    pub migration: Option<Migration>,
     pub warnings: Vec<String>,
 }
 
@@ -11,7 +11,8 @@ pub struct Diff {
 ///
 /// Only columns present in `new` but missing from `old` produce `ADD COLUMN` (up) and
 /// `DROP COLUMN` (down). Removed columns and type changes are reported as warnings rather
-/// than emitting destructive `DROP`/`MODIFY` statements.
+/// than emitting destructive `DROP`/`MODIFY` statements. The migration is named
+/// `<table_name>_alter`.
 pub fn diff_schemas(
     old: &InferredSchema,
     new: &InferredSchema,
@@ -69,9 +70,13 @@ pub fn diff_schemas(
     // Drop columns in reverse of the order they were added.
     down_lines.reverse();
 
-    Diff {
+    let migration = (!up_lines.is_empty()).then(|| Migration {
+        name: format!("{}_alter", table_name),
         up: up_lines.join("\n"),
         down: down_lines.join("\n"),
+    });
+    Diff {
+        migration,
         warnings,
     }
 }
@@ -86,9 +91,11 @@ mod tests {
         let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1,"b":"x"}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", None);
-        assert!(d.up.contains("ADD COLUMN IF NOT EXISTS `b`"));
-        assert!(d.down.contains("DROP COLUMN IF EXISTS `b`"));
-        assert!(!d.up.contains("`a`")); // unchanged column untouched
+        let m = d.migration.expect("expected a migration");
+        assert_eq!(m.name, "t_alter");
+        assert!(m.up.contains("ADD COLUMN IF NOT EXISTS `b`"));
+        assert!(m.down.contains("DROP COLUMN IF EXISTS `b`"));
+        assert!(!m.up.contains("`a`")); // unchanged column untouched
         assert!(d.warnings.is_empty());
     }
 
@@ -97,7 +104,7 @@ mod tests {
         let old = infer_schema(r#"[{"a":1,"b":2}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", None);
-        assert!(d.up.is_empty());
+        assert!(d.migration.is_none());
         assert!(
             d.warnings
                 .iter()
@@ -110,7 +117,7 @@ mod tests {
         let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap(); // Int64
         let new = infer_schema(r#"[{"a":"x"}]"#, "t").unwrap(); // String
         let d = diff_schemas(&old, &new, "t", None);
-        assert!(d.up.is_empty());
+        assert!(d.migration.is_none());
         assert!(d.warnings.iter().any(|w| w.contains("changed type")));
     }
 
@@ -120,7 +127,7 @@ mod tests {
         let old = infer_schema("{\"a\":1}\n{}", "t").unwrap();
         let new = infer_schema(r#"[{"a":1},{"a":2}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", None);
-        assert!(d.up.is_empty());
+        assert!(d.migration.is_none());
         assert!(
             d.warnings
                 .iter()
@@ -133,8 +140,7 @@ mod tests {
         let old = infer_schema(r#"[{"a":1,"b":"x"}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1,"b":"x"}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", None);
-        assert!(d.up.is_empty());
-        assert!(d.down.is_empty());
+        assert!(d.migration.is_none());
         assert!(d.warnings.is_empty());
     }
 
@@ -146,11 +152,12 @@ mod tests {
         let new = infer_schema(r#"[{"a":1,"c":"x","d":true}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", None);
 
-        assert!(d.up.contains("ADD COLUMN IF NOT EXISTS `d`"));
-        assert!(!d.up.contains("`a`"));
-        assert!(!d.up.contains("`b`"));
-        assert!(!d.up.contains("`c`"));
-        assert!(d.down.contains("DROP COLUMN IF EXISTS `d`"));
+        let m = d.migration.as_ref().expect("expected a migration");
+        assert!(m.up.contains("ADD COLUMN IF NOT EXISTS `d`"));
+        assert!(!m.up.contains("`a`"));
+        assert!(!m.up.contains("`b`"));
+        assert!(!m.up.contains("`c`"));
+        assert!(m.down.contains("DROP COLUMN IF EXISTS `d`"));
 
         assert!(
             d.warnings
@@ -169,6 +176,6 @@ mod tests {
         let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
         let new = infer_schema(r#"[{"a":1,"b":2}]"#, "t").unwrap();
         let d = diff_schemas(&old, &new, "t", Some("ck"));
-        assert!(d.up.contains("ON CLUSTER ck"));
+        assert!(d.migration.unwrap().up.contains("ON CLUSTER ck"));
     }
 }
