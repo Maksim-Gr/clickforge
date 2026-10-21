@@ -113,7 +113,7 @@ pub struct TableArgs {
     /// Comma-separated ORDER BY fields, e.g. 'id,created_at' (overrides inference)
     #[arg(long)]
     pub order_by: Option<String>,
-    /// ClickHouse cluster name (required for ReplicatedMergeTree)
+    /// ClickHouse cluster name (required for ReplicatedMergeTree, which becomes the default engine)
     #[arg(short, long)]
     pub cluster: Option<String>,
     /// Output directory for migration files

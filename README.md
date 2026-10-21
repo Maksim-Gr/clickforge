@@ -202,9 +202,9 @@ clickforge table [OPTIONS] <INPUT>
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-n, --name <NAME>` | input filename stem | Override the table name |
-| `-e, --engine <ENGINE>` | inferred (MergeTree) | `MergeTree`, `ReplicatedMergeTree`, `ReplacingMergeTree`, `SummingMergeTree` |
+| `-e, --engine <ENGINE>` | inferred (MergeTree, or ReplicatedMergeTree with `-c`) | `MergeTree`, `ReplicatedMergeTree`, `ReplacingMergeTree`, `SummingMergeTree` |
 | `--order-by <FIELDS>` | inferred from field names | Comma-separated `ORDER BY` fields |
-| `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` clause; required for `ReplicatedMergeTree` |
+| `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` clause; required for `ReplicatedMergeTree`, and makes it the default engine |
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
 | `--stdout` | off | Print migrations to stdout instead of writing files |
 
