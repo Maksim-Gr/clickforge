@@ -67,16 +67,6 @@ pub struct EngineSuggestion {
     pub rationale: String,
 }
 
-impl EngineSuggestion {
-    pub fn to_engine_config(&self) -> EngineConfig {
-        EngineConfig {
-            engine: self.engine.clone(),
-            order_by: self.order_by.clone(),
-            sum_columns: self.sum_columns.clone(),
-        }
-    }
-}
-
 pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
     let fields: Vec<FieldRole> = schema
         .columns
@@ -174,6 +164,56 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
     ScanResult {
         fields,
         suggestions,
+    }
+}
+
+/// Picks the engine, ORDER BY and SUM columns for a single table, starting from
+/// the scanner's suggestions and applying the user's explicit choices on top.
+///
+/// Without an explicit engine, the first suggestion is used as-is (and `order_by`
+/// is ignored). With one, `order_by` wins if given, else the ORDER BY of the
+/// suggestion for that engine, else of the first suggestion.
+pub fn select_engine(
+    schema: &InferredSchema,
+    engine: Option<TableEngine>,
+    order_by: Option<Vec<String>>,
+) -> EngineConfig {
+    let replicated = engine == Some(TableEngine::ReplicatedMergeTree);
+    let suggestions = scan(schema, replicated).suggestions;
+
+    let Some(engine) = engine else {
+        return suggestions
+            .into_iter()
+            .next()
+            .map(|s| EngineConfig {
+                engine: s.engine,
+                order_by: s.order_by,
+                sum_columns: s.sum_columns,
+            })
+            .unwrap_or_else(|| EngineConfig {
+                engine: TableEngine::MergeTree,
+                order_by: vec![],
+                sum_columns: vec![],
+            });
+    };
+
+    let order_by = order_by.unwrap_or_else(|| {
+        suggestions
+            .iter()
+            .find(|s| s.engine == engine)
+            .or_else(|| suggestions.first())
+            .map(|s| s.order_by.clone())
+            .unwrap_or_default()
+    });
+    let sum_columns = suggestions
+        .iter()
+        .find(|s| s.engine == TableEngine::SummingMergeTree)
+        .map(|s| s.sum_columns.clone())
+        .unwrap_or_default();
+    EngineConfig {
+        engine,
+        order_by,
+        sum_columns,
     }
 }
 
@@ -359,5 +399,75 @@ mod tests {
                 .iter()
                 .any(|s| s.engine == TableEngine::SummingMergeTree)
         );
+    }
+
+    const METRICS: &str = r#"[{"user_id":"u1","event_time":"2024-03-01T00:00:00Z","amount":5}]"#;
+
+    #[test]
+    fn select_engine_defaults_to_first_suggestion() {
+        let schema = infer_schema(METRICS, "t").unwrap();
+        let config = select_engine(&schema, None, None);
+        assert_eq!(config.engine, TableEngine::MergeTree);
+        assert_eq!(config.order_by, vec!["event_time".to_string()]);
+    }
+
+    #[test]
+    fn select_engine_without_engine_ignores_order_by() {
+        let schema = infer_schema(METRICS, "t").unwrap();
+        let config = select_engine(&schema, None, Some(vec!["user_id".to_string()]));
+        assert_eq!(config.order_by, vec!["event_time".to_string()]);
+    }
+
+    #[test]
+    fn select_engine_uses_matching_suggestion_order_by() {
+        let schema = infer_schema(METRICS, "t").unwrap();
+        let config = select_engine(&schema, Some(TableEngine::ReplacingMergeTree), None);
+        assert_eq!(config.engine, TableEngine::ReplacingMergeTree);
+        assert_eq!(
+            config.order_by,
+            vec!["user_id".to_string(), "event_time".to_string()]
+        );
+    }
+
+    #[test]
+    fn select_engine_order_by_override_wins() {
+        let schema = infer_schema(METRICS, "t").unwrap();
+        let config = select_engine(
+            &schema,
+            Some(TableEngine::MergeTree),
+            Some(vec!["user_id".to_string()]),
+        );
+        assert_eq!(config.order_by, vec!["user_id".to_string()]);
+    }
+
+    #[test]
+    fn select_engine_falls_back_to_first_suggestion_order_by() {
+        // No id field, so no ReplacingMergeTree suggestion to match.
+        let schema = infer_schema(r#"[{"event_time":"2024-03-01T00:00:00Z"}]"#, "t").unwrap();
+        let config = select_engine(&schema, Some(TableEngine::ReplacingMergeTree), None);
+        assert_eq!(config.order_by, vec!["event_time".to_string()]);
+    }
+
+    #[test]
+    fn select_engine_summing_takes_sum_columns() {
+        let schema = infer_schema(METRICS, "t").unwrap();
+        let config = select_engine(&schema, Some(TableEngine::SummingMergeTree), None);
+        assert_eq!(config.sum_columns, vec!["amount".to_string()]);
+    }
+
+    #[test]
+    fn select_engine_replicated_matches_replicated_suggestion() {
+        let schema = infer_schema(METRICS, "t").unwrap();
+        let config = select_engine(&schema, Some(TableEngine::ReplicatedMergeTree), None);
+        assert_eq!(config.engine, TableEngine::ReplicatedMergeTree);
+        assert_eq!(config.order_by, vec!["event_time".to_string()]);
+    }
+
+    #[test]
+    fn select_engine_empty_schema_order_by_is_tuple() {
+        let schema = infer_schema(r#"[{"name":"a"}]"#, "t").unwrap();
+        let config = select_engine(&schema, None, None);
+        assert_eq!(config.engine, TableEngine::MergeTree);
+        assert!(config.order_by.is_empty());
     }
 }

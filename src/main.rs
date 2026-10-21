@@ -155,7 +155,8 @@ fn maybe_generate_interactively(
         _ => return, // empty / invalid / out of range → skip
     };
 
-    let engine_config = result.suggestions[choice - 1].to_engine_config();
+    let engine = result.suggestions[choice - 1].engine.clone();
+    let engine_config = scanner::select_engine(schema, Some(engine), None);
     generate_table_migration(
         schema,
         engine_config,
@@ -229,48 +230,12 @@ fn main() {
             let content = read_input(&args.input);
             let schema = schema_or_exit(&content, &table_name);
 
-            let replicated = matches!(args.engine.as_deref(), Some("ReplicatedMergeTree"));
-            let scan_result = scanner::scan(&schema, replicated);
-
-            let engine_config = if let Some(engine_str) = args.engine {
-                let engine: schema::TableEngine = engine_str.parse().unwrap_or_else(|e| die(e));
-                // order_by: use --order-by flag if given, else take from scanner suggestion
-                let order_by = if let Some(ob) = args.order_by {
-                    ob.split(',').map(|s| s.trim().to_string()).collect()
-                } else {
-                    // find the suggestion with matching engine, fall back to first
-                    scan_result
-                        .suggestions
-                        .iter()
-                        .find(|s| s.engine == engine)
-                        .or_else(|| scan_result.suggestions.first())
-                        .map(|s| s.order_by.clone())
-                        .unwrap_or_default()
-                };
-                let sum_columns = scan_result
-                    .suggestions
-                    .iter()
-                    .find(|s| s.engine == schema::TableEngine::SummingMergeTree)
-                    .map(|s| s.sum_columns.clone())
-                    .unwrap_or_default();
-                schema::EngineConfig {
-                    engine,
-                    order_by,
-                    sum_columns,
-                }
-            } else {
-                // no --engine: use first suggestion (MergeTree)
-                scan_result
-                    .suggestions
-                    .into_iter()
-                    .next()
-                    .map(|s| s.to_engine_config())
-                    .unwrap_or_else(|| schema::EngineConfig {
-                        engine: schema::TableEngine::MergeTree,
-                        order_by: vec![],
-                        sum_columns: vec![],
-                    })
-            };
+            let engine: Option<schema::TableEngine> =
+                args.engine.map(|e| e.parse().unwrap_or_else(|e| die(e)));
+            let order_by = args
+                .order_by
+                .map(|ob| ob.split(',').map(|s| s.trim().to_string()).collect());
+            let engine_config = scanner::select_engine(&schema, engine, order_by);
 
             print_schema_summary(&schema);
             generate_table_migration(
