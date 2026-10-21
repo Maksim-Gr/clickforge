@@ -259,6 +259,8 @@ fn table_engine_flag_selects_replicated_merge_tree() {
             &fixture("sample.json"),
             "--engine",
             "ReplicatedMergeTree",
+            "-c",
+            "ck",
             "--stdout",
         ])
         .stdin(Stdio::null())
@@ -267,6 +269,24 @@ fn table_engine_flag_selects_replicated_merge_tree() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ReplicatedMergeTree('/clickhouse/"));
+}
+
+#[test]
+fn table_replicated_engine_without_cluster_reports_error() {
+    let output = clickforge()
+        .args([
+            "table",
+            &fixture("sample.json"),
+            "--engine",
+            "ReplicatedMergeTree",
+            "--stdout",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run clickforge");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requires a cluster"));
 }
 
 #[test]
@@ -285,18 +305,35 @@ fn table_cluster_flag_adds_on_cluster_clause() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ON CLUSTER ck"));
+    assert!(stdout.contains("ReplicatedMergeTree('/clickhouse/"));
 }
 
 #[test]
 fn table_order_by_flag_overrides_suggested_order() {
-    // --order-by is only honored alongside an explicit --engine (main.rs picks the
-    // scanner's own suggestion otherwise), so both flags are required here.
     let output = clickforge()
         .args([
             "table",
             &fixture("sample.json"),
             "--engine",
             "MergeTree",
+            "--order-by",
+            "user_id",
+            "--stdout",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run clickforge");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ORDER BY (`user_id`)"));
+}
+
+#[test]
+fn table_order_by_flag_applies_without_engine_flag() {
+    let output = clickforge()
+        .args([
+            "table",
+            &fixture("sample.json"),
             "--order-by",
             "user_id",
             "--stdout",

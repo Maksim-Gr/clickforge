@@ -156,7 +156,8 @@ fn maybe_generate_interactively(
     };
 
     let engine = result.suggestions[choice - 1].engine.clone();
-    let engine_config = scanner::select_engine(schema, Some(engine), None);
+    let engine_config = scanner::select_engine(schema, Some(engine), None, cluster.as_deref())
+        .unwrap_or_else(|e| die(e));
     generate_table_migration(
         schema,
         engine_config,
@@ -235,7 +236,9 @@ fn main() {
             let order_by = args
                 .order_by
                 .map(|ob| ob.split(',').map(|s| s.trim().to_string()).collect());
-            let engine_config = scanner::select_engine(&schema, engine, order_by);
+            let engine_config =
+                scanner::select_engine(&schema, engine, order_by, args.cluster.as_deref())
+                    .unwrap_or_else(|e| die(e));
 
             print_schema_summary(&schema);
             generate_table_migration(
