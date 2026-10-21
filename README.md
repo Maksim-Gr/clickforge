@@ -144,7 +144,7 @@ clickforge scan [OPTIONS] <INPUT>
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-n, --name <NAME>` | input filename stem | Names the generated `{name}_up.sql`/`{name}_down.sql` files if you pick an engine at the prompt; otherwise no effect on output |
-| `-c, --cluster <CLUSTER>` | — | If set, suggests `ReplicatedMergeTree` variants |
+| `-c, --cluster <CLUSTER>` | — | If set, suggests `ReplicatedMergeTree` instead of `MergeTree` |
 
 ```bash
 clickforge scan video_events.json
@@ -210,7 +210,8 @@ clickforge table [OPTIONS] <INPUT>
 
 ```bash
 clickforge table video_events.json
-clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster
+clickforge table video_events.json -c my_cluster                  # ReplicatedMergeTree ON CLUSTER
+clickforge table video_events.json --order-by event_id,timestamp  # override the inferred ORDER BY
 ```
 
 
@@ -228,7 +229,7 @@ clickforge diff [OPTIONS] <OLD> <NEW>
 |------|---------|-------------|
 | `<OLD>` | — | Existing/old JSON sample (or `-` for stdin) |
 | `<NEW>` | — | New JSON sample (or `-` for stdin) |
-| `-n, --name <NAME>` | new file stem | Override the table name |
+| `-n, --name <NAME>` | new file stem (old file stem if `<NEW>` is `-`) | Override the table name |
 | `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` to the statements |
 | `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
 | `--stdout` | off | Print migrations to stdout instead of writing files |
@@ -260,6 +261,6 @@ Types are inferred by scanning every record and widening as needed:
 
 String columns with few distinct values across a large-enough sample are emitted as `LowCardinality(String)` (a ClickHouse storage optimization). This is conservative: it stays off for small samples and high-distinct columns.
 
-If the same field appears as `Int64` in one record and `Float64` in another, it widens to `Nullable(Float64)`. Any other type conflict widens to `Nullable(String)`.
+If the same field appears as `Int64` in one record and `Float64` (or `UInt64`) in another, it widens to `Float64`. Any other type conflict widens to `String`.
 
 A field is non-nullable only if it is present in every record and is never JSON `null`. Field order in the output matches the first record that introduced each field.
