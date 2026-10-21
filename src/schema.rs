@@ -111,6 +111,14 @@ impl std::fmt::Display for TableEngine {
     }
 }
 
+/// A named pair of SQL scripts: `up` applies a change and `down` reverts it.
+/// The name is the file stem the scripts are written under.
+pub struct Migration {
+    pub name: String,
+    pub up: String,
+    pub down: String,
+}
+
 pub struct EngineConfig {
     pub engine: TableEngine,
     pub order_by: Vec<String>,

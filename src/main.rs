@@ -7,7 +7,6 @@ mod scanner;
 mod schema;
 
 use clap::Parser;
-use generator::{Generator, TableGenerator};
 use owo_colors::{OwoColorize, Stream::Stderr, Stream::Stdout, Style};
 use std::fs;
 use std::path::Path;
@@ -59,37 +58,18 @@ fn load_sample(input: &Path, name: Option<String>) -> sample::Sample {
     sample
 }
 
-/// Prints both migrations to stdout, separated by `-- up` / `-- down` headers.
-fn print_migrations(up: &str, down: &str) {
-    println!("-- up\n{}\n\n-- down\n{}", up, down);
+/// Prints both scripts to stdout, separated by `-- up` / `-- down` headers.
+fn print_migrations(migration: &schema::Migration) {
+    println!("-- up\n{}\n\n-- down\n{}", migration.up, migration.down);
 }
 
-/// Either prints migrations to stdout or writes them to files.
-fn emit_migrations(up: String, down: String, table_name: &str, output_dir: &Path, stdout: bool) {
+/// Either prints a migration to stdout or writes it to files.
+fn emit_migrations(migration: schema::Migration, output_dir: &Path, stdout: bool) {
     if stdout {
-        print_migrations(&up, &down);
+        print_migrations(&migration);
     } else {
-        write_migrations(up, down, table_name, output_dir);
+        write_migrations(migration, output_dir);
     }
-}
-
-/// Builds a CREATE/DROP TABLE migration from a chosen engine config and emits it.
-fn generate_table_migration(
-    schema: &schema::InferredSchema,
-    engine_config: schema::EngineConfig,
-    cluster: Option<String>,
-    table_name: &str,
-    output_dir: &Path,
-    stdout: bool,
-) {
-    let generator = TableGenerator::new(schema, engine_config, cluster);
-    emit_migrations(
-        generator.generate_up(),
-        generator.generate_down(),
-        table_name,
-        output_dir,
-        stdout,
-    );
 }
 
 /// After `scan`, offer to generate a migration from one of the suggestions so the
@@ -124,22 +104,21 @@ fn maybe_generate_interactively(
     let schema = &sample.schema;
     let engine_config = scanner::select_engine(schema, Some(engine), None, cluster.as_deref())
         .unwrap_or_else(|e| die(e));
-    generate_table_migration(
-        schema,
-        engine_config,
-        cluster,
-        &schema.table_name,
+    emit_migrations(
+        generator::table_migration(schema, engine_config, cluster),
         Path::new("."),
         false,
     );
 }
 
-fn write_migrations(up: String, down: String, table_name: &str, output_dir: &Path) {
-    let up_path = output_dir.join(format!("{}_up.sql", table_name));
-    let down_path = output_dir.join(format!("{}_down.sql", table_name));
+fn write_migrations(migration: schema::Migration, output_dir: &Path) {
+    let up_path = output_dir.join(format!("{}_up.sql", migration.name));
+    let down_path = output_dir.join(format!("{}_down.sql", migration.name));
 
-    fs::write(&up_path, up).unwrap_or_else(|e| die(format!("writing {:?}: {}", up_path, e)));
-    fs::write(&down_path, down).unwrap_or_else(|e| die(format!("writing {:?}: {}", down_path, e)));
+    fs::write(&up_path, migration.up)
+        .unwrap_or_else(|e| die(format!("writing {:?}: {}", up_path, e)));
+    fs::write(&down_path, migration.down)
+        .unwrap_or_else(|e| die(format!("writing {:?}: {}", down_path, e)));
 
     let written = "Written:"
         .if_supports_color(Stderr, |t| t.style(Style::new().green().bold()))
@@ -164,14 +143,9 @@ fn main() {
     match cli.command {
         cli::Commands::Kafka(args) => {
             let sample = load_sample(&args.input, args.name);
-            let schema = sample.schema;
-            let table_name = &schema.table_name;
-            print_schema_summary(&schema);
-            let generator = Generator::new(&schema, args.cluster, args.kafka);
+            print_schema_summary(&sample.schema);
             emit_migrations(
-                generator.generate_up(),
-                generator.generate_down(),
-                table_name,
+                generator::kafka_pipeline(&sample.schema, args.cluster, args.kafka),
                 &args.output_dir,
                 args.stdout,
             );
@@ -198,11 +172,8 @@ fn main() {
                     .unwrap_or_else(|e| die(e));
 
             print_schema_summary(&schema);
-            generate_table_migration(
-                &schema,
-                engine_config,
-                args.cluster,
-                &schema.table_name,
+            emit_migrations(
+                generator::table_migration(&schema, engine_config, args.cluster),
                 &args.output_dir,
                 args.stdout,
             );
@@ -211,12 +182,10 @@ fn main() {
         cli::Commands::Diff(args) => {
             let (old, new) = sample::load_pair(&args.old, &args.new, args.name, std::io::stdin())
                 .unwrap_or_else(|e| die(e));
-            let table_name = &new.schema.table_name;
-
             let result = diff::diff_schemas(
                 &old.schema,
                 &new.schema,
-                table_name,
+                &new.schema.table_name,
                 args.cluster.as_deref(),
             );
             for w in &result.warnings {
@@ -225,18 +194,10 @@ fn main() {
                     .to_string();
                 eprintln!("{} {}", warning, w);
             }
-            if result.up.is_empty() {
-                if result.warnings.is_empty() {
-                    eprintln!("No changes detected.");
-                }
-            } else {
-                emit_migrations(
-                    result.up,
-                    result.down,
-                    &format!("{}_alter", table_name),
-                    &args.output_dir,
-                    args.stdout,
-                );
+            match result.migration {
+                Some(migration) => emit_migrations(migration, &args.output_dir, args.stdout),
+                None if result.warnings.is_empty() => eprintln!("No changes detected."),
+                None => {}
             }
         }
     }
