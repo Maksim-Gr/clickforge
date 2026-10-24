@@ -345,3 +345,181 @@ fn table_order_by_flag_applies_without_engine_flag() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ORDER BY (`user_id`)"));
 }
+
+/// A fresh, empty temp directory unique to `test`.
+fn temp_dir(test: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("clickforge_test_{}_{}", test, std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Runs `contract init` for the `sample.json` fixture into `dir`.
+fn contract_init(dir: &std::path::Path, target: &str) -> std::process::Output {
+    clickforge()
+        .args([
+            "contract",
+            "init",
+            &fixture("sample.json"),
+            "--target",
+            target,
+            "-o",
+            dir.to_str().unwrap(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run clickforge")
+}
+
+/// Runs `contract check` against `dir/sample.contract.json`, feeding `sample` on stdin.
+fn contract_check(dir: &std::path::Path, sample: &str) -> std::process::Output {
+    let contract = dir.join("sample.contract.json");
+    let mut child = clickforge()
+        .args(["contract", "check", contract.to_str().unwrap(), "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run clickforge");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(sample.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+const SAMPLE_V1: &str = r#"[
+  {"user_id": "u3", "event_time": "2024-03-03T10:00:00Z", "amount": 1},
+  {"user_id": "u4", "event_time": "2024-03-04T10:00:00Z", "amount": 2}
+]"#;
+
+#[test]
+fn contract_init_kafka_writes_contract_and_v1_migration() {
+    let dir = temp_dir("contract_init_kafka");
+    let output = contract_init(&dir, "kafka");
+    assert!(output.status.success(), "{:?}", output);
+
+    let contract: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("sample.contract.json")).unwrap())
+            .unwrap();
+    assert_eq!(contract["version"], 1);
+    assert_eq!(contract["target"], "kafka");
+    assert_eq!(contract["cluster"], "clickhouse_datalake");
+    assert_eq!(contract["kafka"], "kafka");
+    assert_eq!(contract["fields"][2]["name"], "amount");
+
+    let up = std::fs::read_to_string(dir.join("sample_v1_up.sql")).unwrap();
+    let down = std::fs::read_to_string(dir.join("sample_v1_down.sql")).unwrap();
+    assert!(up.contains("MATERIALIZED VIEW"));
+    assert!(down.contains("DROP TABLE"));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_init_table_writes_create_table() {
+    let dir = temp_dir("contract_init_table");
+    let output = contract_init(&dir, "table");
+    assert!(output.status.success(), "{:?}", output);
+    let up = std::fs::read_to_string(dir.join("sample_v1_up.sql")).unwrap();
+    assert!(up.contains("CREATE TABLE"));
+    assert!(!up.contains("MATERIALIZED VIEW"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_init_refuses_to_overwrite_contract() {
+    let dir = temp_dir("contract_init_overwrite");
+    std::fs::write(dir.join("sample.contract.json"), "edited by hand").unwrap();
+    let output = contract_init(&dir, "kafka");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("sample.contract.json")).unwrap(),
+        "edited by hand"
+    );
+    assert!(!dir.join("sample_v1_up.sql").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_init_kafka_rejects_engine_flag() {
+    let output = clickforge()
+        .args([
+            "contract",
+            "init",
+            &fixture("sample.json"),
+            "--target",
+            "kafka",
+            "--engine",
+            "MergeTree",
+            "-o",
+            "/nonexistent",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run clickforge");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--engine"));
+}
+
+#[test]
+fn contract_check_matching_sample_exits_0() {
+    let dir = temp_dir("contract_check_match");
+    contract_init(&dir, "kafka");
+    let output = contract_check(&dir, SAMPLE_V1);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_check_new_nullable_field_exits_0_and_reports_it() {
+    let dir = temp_dir("contract_check_compatible");
+    contract_init(&dir, "kafka");
+    let sample = r#"[
+      {"user_id": "u3", "event_time": "2024-03-03T10:00:00Z", "amount": 1, "device": "tv"},
+      {"user_id": "u4", "event_time": "2024-03-04T10:00:00Z", "amount": 2}
+    ]"#;
+    let output = contract_check(&dir, sample);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("compatible") && stderr.contains("device"),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_check_attention_exits_2() {
+    let dir = temp_dir("contract_check_attention");
+    contract_init(&dir, "kafka");
+    let output = contract_check(&dir, &SAMPLE_V1.replace("\"amount\": 1", "\"amount\": 1.5"));
+    assert_eq!(output.status.code(), Some(2), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("amount"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_check_breaking_exits_3() {
+    let dir = temp_dir("contract_check_breaking");
+    contract_init(&dir, "kafka");
+    let output = contract_check(
+        &dir,
+        &SAMPLE_V1.replace("\"amount\": 1", "\"amount\": \"one\""),
+    );
+    assert_eq!(output.status.code(), Some(3), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("breaking"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_check_invalid_contract_exits_1() {
+    let dir = temp_dir("contract_check_invalid");
+    std::fs::write(dir.join("sample.contract.json"), "{\"version\": 1}").unwrap();
+    let output = contract_check(&dir, SAMPLE_V1);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("sample.contract.json"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

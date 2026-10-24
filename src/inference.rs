@@ -76,7 +76,9 @@ pub fn infer_schema(content: &str, table_name: &str) -> Result<InferredSchema, S
         .into_iter()
         .map(|name| {
             // Absent only when every occurrence of this field was JSON `null`.
-            let ch_type = field_types.remove(&name).unwrap_or(ColumnType::String);
+            let observed = field_types.remove(&name);
+            let type_observed = observed.is_some();
+            let ch_type = observed.unwrap_or(ColumnType::String);
             let seen = *field_seen.get(&name).unwrap_or(&0);
             // Nullable if the field was missing from at least one record, or was
             // present but null at least once.
@@ -91,6 +93,7 @@ pub fn infer_schema(content: &str, table_name: &str) -> Result<InferredSchema, S
                 ch_type,
                 nullable,
                 low_cardinality,
+                type_observed,
             }
         })
         .collect();
@@ -191,7 +194,7 @@ fn is_low_cardinality(ch_type: &ColumnType, distinct: Option<usize>, record_coun
     }
 }
 
-fn merge_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
+pub fn merge_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
     if a == b {
         return a.clone();
     }
@@ -349,6 +352,7 @@ mod tests {
         let a = &schema.columns[0];
         assert_eq!(a.ch_type, ColumnType::String);
         assert!(a.nullable);
+        assert!(!a.type_observed);
     }
 
     #[test]
@@ -357,6 +361,7 @@ mod tests {
         let a = &schema.columns[0];
         assert_eq!(a.ch_type, ColumnType::Int64);
         assert!(a.nullable);
+        assert!(a.type_observed);
     }
 
     #[test]

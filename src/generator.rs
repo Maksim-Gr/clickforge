@@ -333,6 +333,7 @@ mod tests {
             ch_type,
             nullable: false,
             low_cardinality: false,
+            type_observed: true,
         }
     }
 
