@@ -190,17 +190,24 @@ fn main() {
                 &new.schema.table_name,
                 args.cluster.as_deref(),
             );
-            for w in &result.warnings {
-                let warning = "Warning:"
-                    .if_supports_color(Stderr, |t| t.style(Style::new().yellow().bold()))
-                    .to_string();
-                eprintln!("{} {}", warning, w);
+            let mut changes = result.changes;
+            changes.sort_by_key(|c| std::cmp::Reverse(c.class));
+            print_changes(&changes);
+            // Only new fields are migrated; any change to an existing one is just reported.
+            if changes
+                .iter()
+                .any(|c| old.schema.columns.iter().any(|o| o.name == c.field))
+            {
+                eprintln!(
+                    "\ndiff only adds columns; review the changes to existing fields above by hand."
+                );
             }
             match result.migration {
                 Some(migration) => emit_migrations(migration, &args.output_dir, args.stdout),
-                None if result.warnings.is_empty() => eprintln!("No changes detected."),
+                None if changes.is_empty() => eprintln!("No changes detected."),
                 None => {}
             }
+            std::process::exit(exit_code(&changes));
         }
 
         cli::Commands::Contract(cli::ContractCommands::Init(args)) => contract_init(args),
@@ -298,12 +305,16 @@ fn contract_init(args: cli::ContractInitArgs) {
 /// worst change: 0 (none/compatible), 2 (attention) or 3 (breaking).
 fn contract_check(args: cli::ContractCheckArgs) {
     let (_, changes) = report_check(&args.contract, &args.sample);
-    let code = match changes.iter().map(|c| c.class).max() {
+    std::process::exit(exit_code(&changes));
+}
+
+/// 3 when any change is breaking, 2 when any needs attention, else 0.
+fn exit_code(changes: &[contract::Change]) -> i32 {
+    match changes.iter().map(|c| c.class).max() {
         Some(contract::ChangeClass::Breaking) => 3,
         Some(contract::ChangeClass::Attention) => 2,
         _ => 0,
-    };
-    std::process::exit(code);
+    }
 }
 
 /// Writes the next contract version and the migration to it, then exits 0, or 2 when

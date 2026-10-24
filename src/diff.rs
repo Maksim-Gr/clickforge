@@ -1,17 +1,21 @@
-use crate::schema::{Column, InferredSchema, Migration, quote_ident};
-use std::collections::{HashMap, HashSet};
+use crate::contract::{self, Accept, Change, Contract, Target};
+use crate::evolve;
+use crate::schema::{EngineConfig, InferredSchema, Migration, TableEngine};
 
 pub struct Diff {
     /// `None` when there are no columns to add.
     pub migration: Option<Migration>,
-    pub warnings: Vec<String>,
+    /// Every difference, classified as `contract check` would.
+    pub changes: Vec<Change>,
 }
 
 /// Compares two inferred schemas and produces additive `ALTER TABLE` migrations.
 ///
-/// Only columns present in `new` but missing from `old` produce `ADD COLUMN` (up) and
-/// `DROP COLUMN` (down). Removed columns and type changes are reported as warnings rather
-/// than emitting destructive `DROP`/`MODIFY` statements. The migration is named
+/// The old schema stands in for a contract, so differences are classified exactly as
+/// `contract check` classifies them. Only new fields are migrated, as `ADD COLUMN`
+/// (up) and `DROP COLUMN` (down), always nullable: `diff` has no `--accept` to make
+/// one required. Type changes and missing fields are only reported, since retyping or
+/// dropping a populated column is destructive. The migration is named
 /// `<table_name>_alter`.
 pub fn diff_schemas(
     old: &InferredSchema,
@@ -19,163 +23,143 @@ pub fn diff_schemas(
     table_name: &str,
     cluster: Option<&str>,
 ) -> Diff {
-    let t = quote_ident(table_name);
-    // Cluster names are config-defined labels, not identifiers derived from
-    // arbitrary input, and are left unquoted for consistency with generator.rs.
-    let on_cluster = cluster
-        .map(|c| format!(" ON CLUSTER {}", c))
-        .unwrap_or_default();
+    let mut baseline = Contract::from_schema(
+        old,
+        Target::Table,
+        cluster.map(String::from),
+        None,
+        // Never read: no column is modified, so sorting keys don't matter here.
+        EngineConfig {
+            engine: TableEngine::MergeTree,
+            order_by: vec![],
+            sum_columns: vec![],
+        },
+    );
+    baseline.table = table_name.to_string();
 
-    let old_by_name: HashMap<&str, &Column> =
-        old.columns.iter().map(|c| (c.name.as_str(), c)).collect();
-    let new_names: HashSet<&str> = new.columns.iter().map(|c| c.name.as_str()).collect();
-
-    let mut up_lines: Vec<String> = Vec::new();
-    let mut down_lines: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-
-    for col in &new.columns {
-        match old_by_name.get(col.name.as_str()) {
-            None => {
-                let ty = col.ch_type_str();
-                let qcol = quote_ident(&col.name);
-                up_lines.push(format!(
-                    "ALTER TABLE {t}{on_cluster} ADD COLUMN IF NOT EXISTS {qcol} {ty};"
-                ));
-                down_lines.push(format!(
-                    "ALTER TABLE {t}{on_cluster} DROP COLUMN IF EXISTS {qcol};"
-                ));
-            }
-            Some(old_col) if old_col.ch_type != col.ch_type || old_col.nullable != col.nullable => {
-                warnings.push(format!(
-                    "column `{}` changed type {} -> {} (no MODIFY emitted; review manually)",
-                    col.name,
-                    old_col.ch_type.as_ch_str(old_col.nullable),
-                    col.ch_type.as_ch_str(col.nullable)
-                ));
-            }
-            Some(_) => {}
-        }
-    }
-
-    for col in &old.columns {
-        if !new_names.contains(col.name.as_str()) {
-            warnings.push(format!(
-                "column `{}` exists in old but not new (no DROP emitted; review manually)",
-                col.name
-            ));
-        }
-    }
-
-    // Drop columns in reverse of the order they were added.
-    down_lines.reverse();
-
-    let migration = (!up_lines.is_empty()).then(|| Migration {
-        name: format!("{}_alter", table_name),
-        up: up_lines.join("\n"),
-        down: down_lines.join("\n"),
-    });
-    Diff {
-        migration,
-        warnings,
-    }
+    let changes = contract::check(&baseline, new);
+    // Nothing is accepted, so existing columns are left alone and only additions apply.
+    let next = contract::next_version(&baseline, &changes, Accept::Fields(&[]))
+        .expect("accepting nothing can't name an unknown field");
+    let migration = next
+        .contract
+        .and_then(|next| evolve::migration(&baseline, &next))
+        .map(|m| Migration {
+            name: format!("{table_name}_alter"),
+            ..m
+        });
+    Diff { migration, changes }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::ChangeClass;
     use crate::inference::infer_schema;
 
+    fn run(old: &str, new: &str, cluster: Option<&str>) -> Diff {
+        let old = infer_schema(old, "t").unwrap();
+        let new = infer_schema(new, "t").unwrap();
+        diff_schemas(&old, &new, "t", cluster)
+    }
+
+    fn classes(d: &Diff) -> Vec<(ChangeClass, &str)> {
+        d.changes
+            .iter()
+            .map(|c| (c.class, c.field.as_str()))
+            .collect()
+    }
+
     #[test]
-    fn added_field_produces_add_and_drop() {
-        let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
-        let new = infer_schema(r#"[{"a":1,"b":"x"}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, "t", None);
+    fn added_nullable_field_is_compatible_add_and_drop() {
+        let d = run(r#"[{"a":1}]"#, "{\"a\":1,\"b\":\"x\"}\n{\"a\":2}", None);
+        assert_eq!(classes(&d), vec![(ChangeClass::Compatible, "b")]);
         let m = d.migration.expect("expected a migration");
         assert_eq!(m.name, "t_alter");
-        assert!(m.up.contains("ADD COLUMN IF NOT EXISTS `b`"));
-        assert!(m.down.contains("DROP COLUMN IF EXISTS `b`"));
-        assert!(!m.up.contains("`a`")); // unchanged column untouched
-        assert!(d.warnings.is_empty());
-    }
-
-    #[test]
-    fn removed_field_warns_not_dropped() {
-        let old = infer_schema(r#"[{"a":1,"b":2}]"#, "t").unwrap();
-        let new = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, "t", None);
-        assert!(d.migration.is_none());
-        assert!(
-            d.warnings
-                .iter()
-                .any(|w| w.contains("`b`") && w.contains("not new"))
+        assert_eq!(
+            m.up,
+            "ALTER TABLE `t` ADD COLUMN IF NOT EXISTS `b` Nullable(String);"
         );
+        assert_eq!(m.down, "ALTER TABLE `t` DROP COLUMN IF EXISTS `b`;");
     }
 
     #[test]
-    fn type_change_warns() {
-        let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap(); // Int64
-        let new = infer_schema(r#"[{"a":"x"}]"#, "t").unwrap(); // String
-        let d = diff_schemas(&old, &new, "t", None);
-        assert!(d.migration.is_none());
-        assert!(d.warnings.iter().any(|w| w.contains("changed type")));
+    fn added_always_present_field_is_added_as_nullable() {
+        let d = run(r#"[{"a":1}]"#, r#"[{"a":1,"b":"x"}]"#, None);
+        assert_eq!(classes(&d), vec![(ChangeClass::Attention, "b")]);
+        let m = d.migration.expect("expected a migration");
+        assert!(m.up.contains("`b` Nullable(String);"), "{}", m.up);
     }
 
     #[test]
-    fn nullability_change_warns() {
-        // a is nullable in old (absent from one record), non-nullable in new
-        let old = infer_schema("{\"a\":1}\n{}", "t").unwrap();
-        let new = infer_schema(r#"[{"a":1},{"a":2}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, "t", None);
+    fn required_field_missing_from_new_is_breaking_and_not_dropped() {
+        let d = run(r#"[{"a":1,"b":2}]"#, r#"[{"a":1}]"#, None);
+        assert_eq!(classes(&d), vec![(ChangeClass::Breaking, "b")]);
         assert!(d.migration.is_none());
-        assert!(
-            d.warnings
-                .iter()
-                .any(|w| w.contains("`a`") && w.contains("changed type"))
-        );
+    }
+
+    #[test]
+    fn nullable_field_missing_from_new_is_no_change() {
+        let d = run("{\"a\":1,\"b\":2}\n{\"a\":1}", r#"[{"a":1}]"#, None);
+        assert!(d.changes.is_empty());
+        assert!(d.migration.is_none());
+    }
+
+    #[test]
+    fn widening_is_reported_not_modified() {
+        let d = run(r#"[{"a":1}]"#, r#"[{"a":1.5}]"#, None);
+        assert_eq!(classes(&d), vec![(ChangeClass::Attention, "a")]);
+        assert!(d.migration.is_none());
+    }
+
+    #[test]
+    fn incompatible_type_is_breaking() {
+        let d = run(r#"[{"a":1}]"#, r#"[{"a":"x"}]"#, None);
+        assert_eq!(classes(&d), vec![(ChangeClass::Breaking, "a")]);
+        assert!(d.migration.is_none());
+    }
+
+    #[test]
+    fn field_becoming_nullable_needs_attention() {
+        let d = run(r#"[{"a":1},{"a":2}]"#, "{\"a\":1}\n{}", None);
+        assert_eq!(classes(&d), vec![(ChangeClass::Attention, "a")]);
+        assert!(d.migration.is_none());
     }
 
     #[test]
     fn identical_schemas_produce_no_changes() {
-        let old = infer_schema(r#"[{"a":1,"b":"x"}]"#, "t").unwrap();
-        let new = infer_schema(r#"[{"a":1,"b":"x"}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, "t", None);
+        let d = run(r#"[{"a":1,"b":"x"}]"#, r#"[{"a":2,"b":"y"}]"#, None);
+        assert!(d.changes.is_empty());
         assert!(d.migration.is_none());
-        assert!(d.warnings.is_empty());
     }
 
     #[test]
     fn combined_add_remove_and_type_change() {
-        // old: a (kept, unchanged), b (removed), c (type change Int64 -> String)
-        // new: a (unchanged), c (String), d (added)
-        let old = infer_schema(r#"[{"a":1,"b":2,"c":3}]"#, "t").unwrap();
-        let new = infer_schema(r#"[{"a":1,"c":"x","d":true}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, "t", None);
-
-        let m = d.migration.as_ref().expect("expected a migration");
-        assert!(m.up.contains("ADD COLUMN IF NOT EXISTS `d`"));
-        assert!(!m.up.contains("`a`"));
-        assert!(!m.up.contains("`b`"));
-        assert!(!m.up.contains("`c`"));
-        assert!(m.down.contains("DROP COLUMN IF EXISTS `d`"));
-
-        assert!(
-            d.warnings
-                .iter()
-                .any(|w| w.contains("`b`") && w.contains("not new"))
+        // old: a (kept), b (removed, required), c (Int64 -> String)
+        // new: a, c (String), d (added, nullable)
+        let d = run(
+            r#"[{"a":1,"b":2,"c":3}]"#,
+            "{\"a\":1,\"c\":\"x\",\"d\":true}\n{\"a\":1,\"c\":\"y\"}",
+            None,
         );
-        assert!(
-            d.warnings
-                .iter()
-                .any(|w| w.contains("`c`") && w.contains("changed type"))
+        assert_eq!(
+            classes(&d),
+            vec![
+                (ChangeClass::Breaking, "b"),
+                (ChangeClass::Breaking, "c"),
+                (ChangeClass::Compatible, "d"),
+            ]
+        );
+        let m = d.migration.expect("expected a migration");
+        assert_eq!(
+            m.up,
+            "ALTER TABLE `t` ADD COLUMN IF NOT EXISTS `d` Nullable(Bool);"
         );
     }
 
     #[test]
     fn cluster_adds_on_cluster() {
-        let old = infer_schema(r#"[{"a":1}]"#, "t").unwrap();
-        let new = infer_schema(r#"[{"a":1,"b":2}]"#, "t").unwrap();
-        let d = diff_schemas(&old, &new, "t", Some("ck"));
+        let d = run(r#"[{"a":1}]"#, r#"[{"a":1,"b":2}]"#, Some("ck"));
         assert!(d.migration.unwrap().up.contains("ON CLUSTER ck"));
     }
 }

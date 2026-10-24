@@ -58,9 +58,50 @@ fn diff_subcommand_generates_alter() {
         .stdin(Stdio::null())
         .output()
         .expect("failed to run clickforge");
-    assert!(output.status.success());
+    // `b` is in every new record: attention (exit 2), still added as nullable.
+    assert_eq!(output.status.code(), Some(2), "{:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("ALTER TABLE"));
+    assert!(
+        stdout.contains("ADD COLUMN IF NOT EXISTS `b` Nullable(String)"),
+        "{stdout}"
+    );
+}
+
+/// Runs `diff` of the `old.json` fixture against `new` fed on stdin.
+fn diff_against_old(new: &str) -> std::process::Output {
+    let mut child = clickforge()
+        .args(["diff", &fixture("old.json"), "-", "--stdout"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run clickforge");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(new.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn diff_compatible_change_exits_0() {
+    let output = diff_against_old("{\"a\": 1, \"b\": \"x\"}\n{\"a\": 2}");
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("compatible"));
+}
+
+#[test]
+fn diff_breaking_change_exits_3_and_reports_it() {
+    let output = diff_against_old(r#"[{"a": "one"}]"#);
+    assert_eq!(output.status.code(), Some(3), "{:?}", output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("breaking") && stderr.contains("only adds columns"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("ALTER"));
 }
 
 #[test]
