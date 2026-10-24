@@ -1,6 +1,7 @@
 mod cli;
 mod contract;
 mod diff;
+mod evolve;
 mod generator;
 mod inference;
 mod sample;
@@ -205,6 +206,8 @@ fn main() {
         cli::Commands::Contract(cli::ContractCommands::Init(args)) => contract_init(args),
 
         cli::Commands::Contract(cli::ContractCommands::Check(args)) => contract_check(args),
+
+        cli::Commands::Contract(cli::ContractCommands::Apply(args)) => contract_apply(args),
     }
 }
 
@@ -292,12 +295,93 @@ fn contract_init(args: cli::ContractInitArgs) {
 /// Prints how a sample differs from a contract and exits with the code of the
 /// worst change: 0 (none/compatible), 2 (attention) or 3 (breaking).
 fn contract_check(args: cli::ContractCheckArgs) {
-    let path = &args.contract;
+    let (_, changes) = report_check(&args.contract, &args.sample);
+    let code = match changes.iter().map(|c| c.class).max() {
+        Some(contract::ChangeClass::Breaking) => 3,
+        Some(contract::ChangeClass::Attention) => 2,
+        _ => 0,
+    };
+    std::process::exit(code);
+}
+
+/// Writes the next contract version and the migration to it, then exits 0, or 2 when
+/// attention changes were left out. Refuses (exit 3) while any change is breaking.
+fn contract_apply(args: cli::ContractApplyArgs) {
+    let (contract, changes) = report_check(&args.contract, &args.sample);
+    if changes
+        .iter()
+        .any(|c| c.class == contract::ChangeClass::Breaking)
+    {
+        eprintln!(
+            "\nNothing applied: breaking changes need the producer fixed, or the contract edited by hand."
+        );
+        std::process::exit(3);
+    }
+
+    let accept = if args.accept_all {
+        contract::Accept::All
+    } else {
+        contract::Accept::Fields(&args.accept)
+    };
+    let next = contract::next_version(&contract, &changes, accept).unwrap_or_else(|e| die(e));
+    let skipped_code = if next.skipped.is_empty() { 0 } else { 2 };
+    let print_skipped = || {
+        if !next.skipped.is_empty() {
+            let skipped = "Skipped:"
+                .if_supports_color(Stderr, |t| t.style(Style::new().yellow().bold()))
+                .to_string();
+            eprintln!(
+                "{} {}; rerun with --accept {} to apply",
+                skipped,
+                next.skipped.join(", "),
+                next.skipped.join(",")
+            );
+        }
+    };
+    let Some(new) = &next.contract else {
+        eprintln!("\nNothing to apply.");
+        print_skipped();
+        std::process::exit(skipped_code);
+    };
+
+    let migration = evolve::migration(&contract, new);
+    let output_dir = args.output_dir.clone().unwrap_or_else(|| {
+        args.contract
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    });
+    for script in ["up", "down"] {
+        let path = output_dir.join(format!("{}_{}.sql", migration.name, script));
+        if path.exists() {
+            die(format!(
+                "{} already exists; nothing written",
+                path.display()
+            ));
+        }
+    }
+
+    eprintln!();
+    write_migrations(migration, &output_dir);
+    fs::write(&args.contract, new.to_json())
+        .unwrap_or_else(|e| die(format!("writing {:?}: {}", args.contract, e)));
+    let written = "Written:"
+        .if_supports_color(Stderr, |t| t.style(Style::new().green().bold()))
+        .to_string();
+    eprintln!("{} {} (v{})", written, args.contract.display(), new.version);
+    print_skipped();
+    std::process::exit(skipped_code);
+}
+
+/// Reads the contract at `path`, checks the sample at `sample_path` against it and
+/// prints the report, worst change first.
+fn report_check(path: &Path, sample_path: &Path) -> (contract::Contract, Vec<contract::Change>) {
     let content = fs::read_to_string(path)
         .unwrap_or_else(|e| die(format!("reading {}: {}", path.display(), e)));
     let contract = contract::Contract::from_json(&content)
         .unwrap_or_else(|e| die(format!("{}: {}", path.display(), e)));
-    let sample = load_sample(&args.sample, Some(contract.table.clone()));
+    let sample = load_sample(sample_path, Some(contract.table.clone()));
 
     let mut changes = contract::check(&contract, &sample.schema);
     // Worst first; the sort is stable, so contract order is kept within a class.
@@ -329,11 +413,5 @@ fn contract_check(args: cli::ContractCheckArgs) {
             change.message
         );
     }
-
-    let code = match changes.iter().map(|c| c.class).max() {
-        Some(contract::ChangeClass::Breaking) => 3,
-        Some(contract::ChangeClass::Attention) => 2,
-        _ => 0,
-    };
-    std::process::exit(code);
+    (contract, changes)
 }

@@ -523,3 +523,150 @@ fn contract_check_invalid_contract_exits_1() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("sample.contract.json"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Runs `contract apply` against `dir/sample.contract.json` with `extra` args,
+/// feeding `sample` on stdin.
+fn contract_apply(dir: &std::path::Path, sample: &str, extra: &[&str]) -> std::process::Output {
+    let contract = dir.join("sample.contract.json");
+    let mut child = clickforge()
+        .args(["contract", "apply", contract.to_str().unwrap(), "-"])
+        .args(extra)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run clickforge");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(sample.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn read_contract(dir: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(dir.join("sample.contract.json")).unwrap())
+        .unwrap()
+}
+
+const SAMPLE_NEW_NULLABLE_FIELD: &str = r#"[
+  {"user_id": "u3", "event_time": "2024-03-03T10:00:00Z", "amount": 1, "device": "tv"},
+  {"user_id": "u4", "event_time": "2024-03-04T10:00:00Z", "amount": 2}
+]"#;
+
+#[test]
+fn contract_apply_compatible_writes_v2_and_bumps_contract() {
+    let dir = temp_dir("contract_apply_compatible");
+    contract_init(&dir, "kafka");
+    let output = contract_apply(&dir, SAMPLE_NEW_NULLABLE_FIELD, &[]);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+
+    let contract = read_contract(&dir);
+    assert_eq!(contract["version"], 2);
+    assert_eq!(contract["fields"][3]["name"], "device");
+    assert_eq!(contract["fields"][3]["nullable"], true);
+
+    let up = std::fs::read_to_string(dir.join("sample_v2_up.sql")).unwrap();
+    let down = std::fs::read_to_string(dir.join("sample_v2_down.sql")).unwrap();
+    assert!(up.contains("ADD COLUMN IF NOT EXISTS `device`"), "{up}");
+    assert!(up.contains("DETACH TABLE `streams`.`sample`"), "{up}");
+    assert!(down.contains("DROP COLUMN IF EXISTS `device`"), "{down}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_apply_breaking_exits_3_and_writes_nothing() {
+    let dir = temp_dir("contract_apply_breaking");
+    contract_init(&dir, "kafka");
+    let before = read_contract(&dir);
+    let sample = SAMPLE_NEW_NULLABLE_FIELD.replace("\"amount\": 1", "\"amount\": \"one\"");
+    let output = contract_apply(&dir, &sample, &[]);
+    assert_eq!(output.status.code(), Some(3), "{:?}", output);
+    assert_eq!(read_contract(&dir), before);
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_apply_unaccepted_attention_exits_2_and_writes_nothing() {
+    let dir = temp_dir("contract_apply_unaccepted");
+    contract_init(&dir, "kafka");
+    let before = read_contract(&dir);
+    let output = contract_apply(
+        &dir,
+        &SAMPLE_V1.replace("\"amount\": 1", "\"amount\": 1.5"),
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--accept"));
+    assert_eq!(read_contract(&dir), before);
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_apply_accepted_widening_modifies_column() {
+    let dir = temp_dir("contract_apply_accepted");
+    contract_init(&dir, "kafka");
+    let sample = SAMPLE_V1.replace("\"amount\": 1", "\"amount\": 1.5");
+    let output = contract_apply(&dir, &sample, &["--accept", "amount"]);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    assert_eq!(read_contract(&dir)["fields"][2]["type"], "Float64");
+    let up = std::fs::read_to_string(dir.join("sample_v2_up.sql")).unwrap();
+    assert!(up.contains("MODIFY COLUMN `amount` Float64"), "{up}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_apply_keeps_hand_edited_settings() {
+    let dir = temp_dir("contract_apply_settings");
+    contract_init(&dir, "kafka");
+    let mut contract = read_contract(&dir);
+    contract["unknown_fields"] = serde_json::json!("ignore");
+    std::fs::write(dir.join("sample.contract.json"), contract.to_string()).unwrap();
+
+    let sample = SAMPLE_NEW_NULLABLE_FIELD.replace("\"amount\": 1", "\"amount\": 1.5");
+    let output = contract_apply(&dir, &sample, &["--accept-all"]);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    let contract = read_contract(&dir);
+    assert_eq!(contract["unknown_fields"], "ignore");
+    assert_eq!(contract["fields"].as_array().unwrap().len(), 3); // `device` ignored
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_apply_rejects_accepting_unchanged_field() {
+    let dir = temp_dir("contract_apply_bad_accept");
+    contract_init(&dir, "kafka");
+    let output = contract_apply(&dir, SAMPLE_NEW_NULLABLE_FIELD, &["--accept", "amount"]);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_apply_refuses_to_overwrite_migration() {
+    let dir = temp_dir("contract_apply_overwrite");
+    contract_init(&dir, "kafka");
+    std::fs::write(dir.join("sample_v2_up.sql"), "-- hand written").unwrap();
+    let output = contract_apply(&dir, SAMPLE_NEW_NULLABLE_FIELD, &[]);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    assert_eq!(read_contract(&dir)["version"], 1);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("sample_v2_up.sql")).unwrap(),
+        "-- hand written"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_apply_without_changes_writes_nothing() {
+    let dir = temp_dir("contract_apply_noop");
+    contract_init(&dir, "kafka");
+    let output = contract_apply(&dir, SAMPLE_V1, &[]);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    assert_eq!(read_contract(&dir)["version"], 1);
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
