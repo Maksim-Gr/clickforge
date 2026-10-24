@@ -57,6 +57,9 @@ pub struct Column {
     pub ch_type: ColumnType,
     pub nullable: bool,
     pub low_cardinality: bool,
+    /// False when every occurrence was JSON `null`, so `ch_type` is a placeholder
+    /// rather than a type seen in the data.
+    pub type_observed: bool,
 }
 
 impl Column {
@@ -73,7 +76,7 @@ pub struct InferredSchema {
     pub record_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(clippy::enum_variant_names)] // names match ClickHouse engine names intentionally
 pub enum TableEngine {
     MergeTree,
@@ -119,6 +122,7 @@ pub struct Migration {
     pub down: String,
 }
 
+#[derive(Clone)]
 pub struct EngineConfig {
     pub engine: TableEngine,
     pub order_by: Vec<String>,

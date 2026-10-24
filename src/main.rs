@@ -1,4 +1,5 @@
 mod cli;
+mod contract;
 mod diff;
 mod generator;
 mod inference;
@@ -200,5 +201,139 @@ fn main() {
                 None => {}
             }
         }
+
+        cli::Commands::Contract(cli::ContractCommands::Init(args)) => contract_init(args),
+
+        cli::Commands::Contract(cli::ContractCommands::Check(args)) => contract_check(args),
     }
+}
+
+/// Writes `{name}.contract.json` and the v1 migration that deploys it.
+fn contract_init(args: cli::ContractInitArgs) {
+    let sample = load_sample(&args.input, args.name);
+    let schema = &sample.schema;
+
+    let contract_path = args
+        .output_dir
+        .join(format!("{}.contract.json", schema.table_name));
+    if contract_path.exists() {
+        die(format!(
+            "{} already exists; edit it instead of re-initializing",
+            contract_path.display()
+        ));
+    }
+
+    let (contract, migration) = match args.target {
+        cli::ContractTarget::Kafka => {
+            if args.engine.is_some() || args.order_by.is_some() {
+                die("--engine and --order-by only apply to --target table");
+            }
+            let cluster = args
+                .cluster
+                .unwrap_or_else(|| "clickhouse_datalake".to_string());
+            let kafka = args.kafka.unwrap_or_else(|| "kafka".to_string());
+            // The pipeline's datalake table is always this engine and key.
+            let engine_config = schema::EngineConfig {
+                engine: schema::TableEngine::ReplicatedMergeTree,
+                order_by: vec!["_timestamp_ms".to_string()],
+                sum_columns: vec![],
+            };
+            let migration = generator::kafka_pipeline(schema, cluster.clone(), kafka.clone());
+            let contract = contract::Contract::from_schema(
+                schema,
+                contract::Target::Kafka,
+                Some(cluster),
+                Some(kafka),
+                engine_config,
+            );
+            (contract, migration)
+        }
+        cli::ContractTarget::Table => {
+            if args.kafka.is_some() {
+                die("--kafka only applies to --target kafka");
+            }
+            let engine: Option<schema::TableEngine> =
+                args.engine.map(|e| e.parse().unwrap_or_else(|e| die(e)));
+            let order_by = args
+                .order_by
+                .map(|ob| ob.split(',').map(|s| s.trim().to_string()).collect());
+            let engine_config =
+                scanner::select_engine(schema, engine, order_by, args.cluster.as_deref())
+                    .unwrap_or_else(|e| die(e));
+            let migration =
+                generator::table_migration(schema, engine_config.clone(), args.cluster.clone());
+            let contract = contract::Contract::from_schema(
+                schema,
+                contract::Target::Table,
+                args.cluster,
+                None,
+                engine_config,
+            );
+            (contract, migration)
+        }
+    };
+
+    print_schema_summary(schema);
+    fs::write(&contract_path, contract.to_json())
+        .unwrap_or_else(|e| die(format!("writing {:?}: {}", contract_path, e)));
+    let written = "Written:"
+        .if_supports_color(Stderr, |t| t.style(Style::new().green().bold()))
+        .to_string();
+    eprintln!("{} {}", written, contract_path.display());
+    write_migrations(
+        schema::Migration {
+            name: format!("{}_v{}", migration.name, contract.version),
+            ..migration
+        },
+        &args.output_dir,
+    );
+}
+
+/// Prints how a sample differs from a contract and exits with the code of the
+/// worst change: 0 (none/compatible), 2 (attention) or 3 (breaking).
+fn contract_check(args: cli::ContractCheckArgs) {
+    let path = &args.contract;
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|e| die(format!("reading {}: {}", path.display(), e)));
+    let contract = contract::Contract::from_json(&content)
+        .unwrap_or_else(|e| die(format!("{}: {}", path.display(), e)));
+    let sample = load_sample(&args.sample, Some(contract.table.clone()));
+
+    let mut changes = contract::check(&contract, &sample.schema);
+    // Worst first; the sort is stable, so contract order is kept within a class.
+    changes.sort_by_key(|c| std::cmp::Reverse(c.class));
+
+    eprintln!(
+        "Checking {} against {} (v{})\n",
+        sample.label.if_supports_color(Stderr, |t| t.bold()),
+        path.display().if_supports_color(Stderr, |t| t.bold()),
+        contract.version
+    );
+    if changes.is_empty() {
+        eprintln!("No changes: the sample fits the contract.");
+    }
+    let max_len = changes.iter().map(|c| c.field.len()).max().unwrap_or(0);
+    for change in &changes {
+        let (label, style) = match change.class {
+            contract::ChangeClass::Breaking => ("breaking", Style::new().red().bold()),
+            contract::ChangeClass::Attention => ("attention", Style::new().yellow().bold()),
+            contract::ChangeClass::Compatible => ("compatible", Style::new().green().bold()),
+            contract::ChangeClass::Info => ("info", Style::new().cyan().bold()),
+        };
+        let label = format!("{:<10}", label);
+        let field = format!("{:<width$}", change.field, width = max_len);
+        eprintln!(
+            "  {}  {}  {}",
+            label.if_supports_color(Stderr, |t| t.style(style)),
+            field.if_supports_color(Stderr, |t| t.bold()),
+            change.message
+        );
+    }
+
+    let code = match changes.iter().map(|c| c.class).max() {
+        Some(contract::ChangeClass::Breaking) => 3,
+        Some(contract::ChangeClass::Attention) => 2,
+        _ => 0,
+    };
+    std::process::exit(code);
 }

@@ -101,6 +101,7 @@ cat video_events.json | clickforge table - --name video_events -o migrations/
 | `scan`    | helper | Inspect JSON fields and pick a ClickHouse engine for a one-off table |
 | `table`   | helper | Generate a single `CREATE TABLE` migration from JSON |
 | `diff`    | helper | Generate `ALTER TABLE` migrations to evolve a table as your JSON schema changes |
+| `contract` | helper | Create a schema contract from a sample, and check new samples against it |
 
 ---
 
@@ -241,6 +242,43 @@ clickforge diff video_events.json video_events_v2.json -n video_events
 Writes `{name}_alter_up.sql` (`ADD COLUMN`) and `{name}_alter_down.sql` (`DROP COLUMN`, reverse order). Removed columns and type changes are **not** migrated automatically — they are reported as warnings on stderr so you can review them by hand (dropping or retyping a populated column is destructive).
 
 > **Kafka pipelines:** `diff` alters a single, unqualified table and does not touch the `raw` → `datalake` materialized view. Applied to a `kafka` pipeline's `datalake` table, the new columns are added but stay empty, because the view never extracts them. Recreate the view with the new fields yourself.
+
+---
+
+### `contract`
+
+A **schema contract** (`{name}.contract.json`) is the committed statement of the schema a table or Kafka pipeline expects. Generate it once from a sample, review and edit it by hand where inference guessed wrong, then check new samples against it.
+
+```bash
+clickforge contract init <INPUT> --target <kafka|table> [OPTIONS]
+clickforge contract check <CONTRACT> <SAMPLE>
+```
+
+`init` writes the contract plus `{name}_v1_up.sql`/`{name}_v1_down.sql` (the same SQL `kafka` or `table` would generate). It refuses to overwrite an existing contract. It takes the `kafka` command's `-n`, `-c`, `-k`, `-o` for `--target kafka`, and the `table` command's `-n`, `-e`, `--order-by`, `-c`, `-o` for `--target table`.
+
+`check` reads the sample (or `-` for stdin), classifies every difference and writes nothing:
+
+| Contract vs sample | Class |
+|---|---|
+| New field, missing or `null` in some records | compatible |
+| New field present in every record | attention |
+| Integers where the contract has `Int64`/`UInt64` (widening to `Float64`) | attention |
+| Required field missing or `null` in some records | attention |
+| Required field absent from the sample | breaking |
+| Values that don't fit the contract's type (e.g. `"abc"` for `Int64`) | breaking |
+| An attention change on an `ORDER BY` column | breaking |
+
+A nullable field absent from the sample is not a change: samples are incomplete by nature. The contract's `unknown_fields` setting decides what new fields are: `propose` (default, as above), `ignore` (reported as info) or `reject` (breaking).
+
+```
+Checking new_events.json against video_events.contract.json (v1)
+
+  breaking    user_id               sample has String values that don't fit Int64; they would be stored as defaults
+  attention   playback_position_ms  Int64 -> Float64 (widening; values are truncated until then)
+  compatible  device                new field Nullable(String)
+```
+
+Exit codes: `0` no changes or compatible only, `2` attention, `3` breaking, `1` error — so CI can gate on them.
 
 ---
 
