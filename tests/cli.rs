@@ -670,3 +670,119 @@ fn contract_apply_without_changes_writes_nothing() {
     assert!(!dir.join("sample_v2_up.sql").exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Copies `dir/sample.contract.json` to `dir/old.contract.json`, then applies `edit`
+/// to the original, as someone editing the deployed contract by hand would.
+fn edit_contract(dir: &std::path::Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    std::fs::copy(
+        dir.join("sample.contract.json"),
+        dir.join("old.contract.json"),
+    )
+    .unwrap();
+    let mut contract = read_contract(dir);
+    edit(&mut contract);
+    std::fs::write(dir.join("sample.contract.json"), contract.to_string()).unwrap();
+}
+
+fn contract_diff(dir: &std::path::Path) -> std::process::Output {
+    clickforge()
+        .args([
+            "contract",
+            "diff",
+            dir.join("old.contract.json").to_str().unwrap(),
+            dir.join("sample.contract.json").to_str().unwrap(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run clickforge")
+}
+
+#[test]
+fn contract_diff_retiring_a_field_swaps_the_view() {
+    let dir = temp_dir("contract_diff_retire");
+    contract_init(&dir, "kafka");
+    edit_contract(&dir, |c| {
+        c["version"] = serde_json::json!(2);
+        c["fields"][2]["retired"] = serde_json::json!(true);
+    });
+    let output = contract_diff(&dir);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    let up = std::fs::read_to_string(dir.join("sample_v2_up.sql")).unwrap();
+    assert!(up.contains("DETACH TABLE `streams`.`sample`"), "{up}");
+    assert!(!up.contains("ALTER") && !up.contains("'amount'"), "{up}");
+    let down = std::fs::read_to_string(dir.join("sample_v2_down.sql")).unwrap();
+    assert!(down.contains("'amount'"), "{down}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_diff_narrowing_warns_in_up_script() {
+    let dir = temp_dir("contract_diff_narrow");
+    contract_init(&dir, "table");
+    edit_contract(&dir, |c| {
+        c["version"] = serde_json::json!(2);
+        c["fields"][0]["type"] = serde_json::json!("Int64"); // user_id: String -> Int64
+    });
+    let output = contract_diff(&dir);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("breaking"));
+    let up = std::fs::read_to_string(dir.join("sample_v2_up.sql")).unwrap();
+    assert!(
+        up.contains("-- WARNING") && up.contains("MODIFY COLUMN `user_id` Int64"),
+        "{up}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_diff_requires_version_bump() {
+    let dir = temp_dir("contract_diff_version");
+    contract_init(&dir, "kafka");
+    edit_contract(&dir, |c| {
+        c["fields"][2]["retired"] = serde_json::json!(true)
+    });
+    let output = contract_diff(&dir);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("version"));
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_diff_rejects_deleted_field() {
+    let dir = temp_dir("contract_diff_deleted");
+    contract_init(&dir, "kafka");
+    edit_contract(&dir, |c| {
+        c["version"] = serde_json::json!(2);
+        c["fields"].as_array_mut().unwrap().pop();
+    });
+    let output = contract_diff(&dir);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retired"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_diff_without_sql_writes_nothing() {
+    let dir = temp_dir("contract_diff_no_sql");
+    contract_init(&dir, "kafka");
+    edit_contract(&dir, |c| c["unknown_fields"] = serde_json::json!("reject"));
+    let output = contract_diff(&dir);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No migration needed"));
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn contract_check_reports_retired_field_as_info() {
+    let dir = temp_dir("contract_check_retired");
+    contract_init(&dir, "kafka");
+    let mut contract = read_contract(&dir);
+    contract["fields"][2]["retired"] = serde_json::json!(true);
+    std::fs::write(dir.join("sample.contract.json"), contract.to_string()).unwrap();
+    let output = contract_check(&dir, SAMPLE_V1);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retired field"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

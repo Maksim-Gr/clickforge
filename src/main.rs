@@ -11,7 +11,7 @@ mod schema;
 use clap::Parser;
 use owo_colors::{OwoColorize, Stream::Stderr, Stream::Stdout, Style};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Prints `Error: {msg}` to stderr and exits the process with status 1.
 fn die(msg: impl std::fmt::Display) -> ! {
@@ -208,6 +208,8 @@ fn main() {
         cli::Commands::Contract(cli::ContractCommands::Check(args)) => contract_check(args),
 
         cli::Commands::Contract(cli::ContractCommands::Apply(args)) => contract_apply(args),
+
+        cli::Commands::Contract(cli::ContractCommands::Diff(args)) => contract_diff(args),
     }
 }
 
@@ -344,23 +346,10 @@ fn contract_apply(args: cli::ContractApplyArgs) {
         std::process::exit(skipped_code);
     };
 
-    let migration = evolve::migration(&contract, new);
-    let output_dir = args.output_dir.clone().unwrap_or_else(|| {
-        args.contract
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."))
-            .to_path_buf()
-    });
-    for script in ["up", "down"] {
-        let path = output_dir.join(format!("{}_{}.sql", migration.name, script));
-        if path.exists() {
-            die(format!(
-                "{} already exists; nothing written",
-                path.display()
-            ));
-        }
-    }
+    // Every applied change adds or modifies a column.
+    let migration = evolve::migration(&contract, new).expect("applied changes alter the table");
+    let output_dir = migration_dir(&args.contract, args.output_dir.clone());
+    refuse_overwrite(&migration, &output_dir);
 
     eprintln!();
     write_migrations(migration, &output_dir);
@@ -377,10 +366,7 @@ fn contract_apply(args: cli::ContractApplyArgs) {
 /// Reads the contract at `path`, checks the sample at `sample_path` against it and
 /// prints the report, worst change first.
 fn report_check(path: &Path, sample_path: &Path) -> (contract::Contract, Vec<contract::Change>) {
-    let content = fs::read_to_string(path)
-        .unwrap_or_else(|e| die(format!("reading {}: {}", path.display(), e)));
-    let contract = contract::Contract::from_json(&content)
-        .unwrap_or_else(|e| die(format!("{}: {}", path.display(), e)));
+    let contract = read_contract(path);
     let sample = load_sample(sample_path, Some(contract.table.clone()));
 
     let mut changes = contract::check(&contract, &sample.schema);
@@ -396,8 +382,14 @@ fn report_check(path: &Path, sample_path: &Path) -> (contract::Contract, Vec<con
     if changes.is_empty() {
         eprintln!("No changes: the sample fits the contract.");
     }
+    print_changes(&changes);
+    (contract, changes)
+}
+
+/// Prints one line per change: its class, field and message.
+fn print_changes(changes: &[contract::Change]) {
     let max_len = changes.iter().map(|c| c.field.len()).max().unwrap_or(0);
-    for change in &changes {
+    for change in changes {
         let (label, style) = match change.class {
             contract::ChangeClass::Breaking => ("breaking", Style::new().red().bold()),
             contract::ChangeClass::Attention => ("attention", Style::new().yellow().bold()),
@@ -413,5 +405,80 @@ fn report_check(path: &Path, sample_path: &Path) -> (contract::Contract, Vec<con
             change.message
         );
     }
-    (contract, changes)
+}
+
+fn read_contract(path: &Path) -> contract::Contract {
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|e| die(format!("reading {}: {}", path.display(), e)));
+    contract::Contract::from_json(&content)
+        .unwrap_or_else(|e| die(format!("{}: {}", path.display(), e)))
+}
+
+/// `output_dir`, else the directory holding the contract at `contract`.
+fn migration_dir(contract: &Path, output_dir: Option<PathBuf>) -> PathBuf {
+    output_dir.unwrap_or_else(|| {
+        contract
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    })
+}
+
+/// Exits(1) if either of `migration`'s scripts already exists in `dir`.
+fn refuse_overwrite(migration: &schema::Migration, dir: &Path) {
+    for script in ["up", "down"] {
+        let path = dir.join(format!("{}_{}.sql", migration.name, script));
+        if path.exists() {
+            die(format!(
+                "{} already exists; nothing written",
+                path.display()
+            ));
+        }
+    }
+}
+
+/// Writes the migration from the deployed contract `old` to the hand-edited `new`.
+/// Every edit is applied; the report only shows what each one risks.
+fn contract_diff(args: cli::ContractDiffArgs) {
+    let old = read_contract(&args.old);
+    let new = read_contract(&args.new);
+    let mut changes = contract::diff(&old, &new)
+        .unwrap_or_else(|e| die(format!("{}: {}", args.new.display(), e)));
+    changes.sort_by_key(|c| std::cmp::Reverse(c.class));
+
+    eprintln!(
+        "Diffing {} (v{}) -> {} (v{})\n",
+        args.old.display().if_supports_color(Stderr, |t| t.bold()),
+        old.version,
+        args.new.display().if_supports_color(Stderr, |t| t.bold()),
+        new.version
+    );
+    if changes.is_empty() {
+        eprintln!("No changes.");
+    }
+    print_changes(&changes);
+
+    let Some(migration) = evolve::migration(&old, &new) else {
+        if new.version != old.version {
+            die(format!(
+                "nothing changes in ClickHouse, so leave `version` at {}",
+                old.version
+            ));
+        }
+        eprintln!("\nNo migration needed: nothing changes in ClickHouse.");
+        return;
+    };
+    if new.version != old.version + 1 {
+        die(format!(
+            "set `version` to {} in {} (the deployed contract is v{})",
+            old.version + 1,
+            args.new.display(),
+            old.version
+        ));
+    }
+    let output_dir = migration_dir(&args.new, args.output_dir);
+    refuse_overwrite(&migration, &output_dir);
+    eprintln!();
+    write_migrations(migration, &output_dir);
 }

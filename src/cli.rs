@@ -12,7 +12,7 @@ const STYLES: Styles = Styles::styled()
 #[command(
     name = "clickforge",
     about = "Generate a Kafka→ClickHouse ingestion pipeline (and helper migrations) from a JSON sample",
-    long_about = "Generate the Kafka→ClickHouse ingestion pipeline from a JSON sample — the streams/raw/datalake tables and the materialized views that connect them.\n\nCommands:\n  kafka    Generate the full Kafka→ClickHouse ingestion pipeline (primary)\n  scan     Helper: inspect fields and pick an engine\n  table    Helper: generate a single CREATE TABLE migration\n  diff     Helper: generate ALTER TABLE migrations as the schema evolves\n  contract Create a schema contract, check samples against it, apply changes\n\nTip: run `clickforge kafka <file>` to generate the whole pipeline.",
+    long_about = "Generate the Kafka→ClickHouse ingestion pipeline from a JSON sample — the streams/raw/datalake tables and the materialized views that connect them.\n\nCommands:\n  kafka    Generate the full Kafka→ClickHouse ingestion pipeline (primary)\n  scan     Helper: inspect fields and pick an engine\n  table    Helper: generate a single CREATE TABLE migration\n  diff     Helper: generate ALTER TABLE migrations as the schema evolves\n  contract Create a schema contract, check samples against it, apply or diff changes\n\nTip: run `clickforge kafka <file>` to generate the whole pipeline.",
     version = env!("CARGO_PKG_VERSION"),
     after_help = "EXAMPLES:\n  clickforge kafka video_events.json          Generate the full Kafka→ClickHouse ingestion pipeline\n  clickforge scan video_events.json           Helper: inspect fields, suggest engines, then pick one to generate\n  clickforge table video_events.json          Helper: generate a single CREATE TABLE migration\n  clickforge diff old.json new.json -n events Helper: generate an additive ALTER TABLE migration\n  clickforge contract init events.json --target kafka\n                                              Create a schema contract and its first migration\n\nNew here? Run `clickforge kafka <file>` to generate the pipeline.",
     styles = STYLES
@@ -32,7 +32,7 @@ pub enum Commands {
     Table(TableArgs),
     /// Generate ALTER TABLE migrations from the diff between two JSON samples
     Diff(DiffArgs),
-    /// Create a schema contract, check a JSON sample against it, or apply the changes
+    /// Create a schema contract, check a JSON sample against it, or migrate it to a new version
     #[command(subcommand)]
     Contract(ContractCommands),
 }
@@ -45,6 +45,8 @@ pub enum ContractCommands {
     Check(ContractCheckArgs),
     /// Write the next contract version and the migration to it from a JSON sample
     Apply(ContractApplyArgs),
+    /// Write the migration from a deployed contract to a hand-edited version of it
+    Diff(ContractDiffArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,6 +204,20 @@ pub struct ContractApplyArgs {
     #[arg(long)]
     pub accept_all: bool,
     /// Output directory for migration files (defaults to the contract's directory)
+    #[arg(short, long)]
+    pub output_dir: Option<PathBuf>,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    after_help = "EXAMPLES:\n  git show HEAD:video_events.contract.json > /tmp/old.json   The deployed version\n  $EDITOR video_events.contract.json                          Edit it, and bump `version`\n  clickforge contract diff /tmp/old.json video_events.contract.json\n\nWrites {name}_v{N}_up.sql/_down.sql; never touches the contracts. Every edit is applied: this is how breaking changes are made.\nDelete a field by marking it \"retired\": true; its column is kept."
+)]
+pub struct ContractDiffArgs {
+    /// Path to the deployed contract
+    pub old: PathBuf,
+    /// Path to the hand-edited contract, with `version` one higher
+    pub new: PathBuf,
+    /// Output directory for migration files (defaults to the new contract's directory)
     #[arg(short, long)]
     pub output_dir: Option<PathBuf>,
 }

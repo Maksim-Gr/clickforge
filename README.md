@@ -101,7 +101,7 @@ cat video_events.json | clickforge table - --name video_events -o migrations/
 | `scan`    | helper | Inspect JSON fields and pick a ClickHouse engine for a one-off table |
 | `table`   | helper | Generate a single `CREATE TABLE` migration from JSON |
 | `diff`    | helper | Generate `ALTER TABLE` migrations to evolve a table as your JSON schema changes |
-| `contract` | helper | Create a schema contract from a sample, check new samples against it, and apply the changes as migrations |
+| `contract` | helper | Create a schema contract from a sample, check new samples against it, and migrate it as it changes |
 
 ---
 
@@ -253,6 +253,7 @@ A **schema contract** (`{name}.contract.json`) is the committed statement of the
 clickforge contract init <INPUT> --target <kafka|table> [OPTIONS]
 clickforge contract check <CONTRACT> <SAMPLE>
 clickforge contract apply <CONTRACT> <SAMPLE> [--accept <FIELDS> | --accept-all] [-o <DIR>]
+clickforge contract diff <OLD> <NEW> [-o <DIR>]
 ```
 
 `init` writes the contract plus `{name}_v1_up.sql`/`{name}_v1_down.sql` (the same SQL `kafka` or `table` would generate). It refuses to overwrite an existing contract. It takes the `kafka` command's `-n`, `-c`, `-k`, `-o` for `--target kafka`, and the `table` command's `-n`, `-e`, `--order-by`, `-c`, `-o` for `--target table`.
@@ -299,6 +300,20 @@ ATTACH TABLE `streams`.`video_events` ON CLUSTER …;
 ```
 
 The down script restores the previous view first, then drops added columns and reverts `MODIFY`s, with a `-- WARNING` comment where reverting truncates values or turns `NULL`s into defaults. Migrations are written next to the contract unless `-o` is given, and `apply` refuses to overwrite an existing one.
+
+`diff` is how a person changes the contract on purpose — including breaking changes, which `apply` never makes. Edit the contract, bump its `version` by one, and diff it against the deployed version; every edit is applied, and the report shows what each one risks:
+
+```bash
+git show HEAD:video_events.contract.json > /tmp/old.json
+$EDITOR video_events.contract.json
+clickforge contract diff /tmp/old.json video_events.contract.json
+```
+
+- **Removing a field:** mark it `"retired": true` instead of deleting it. It stops being extracted (for `kafka`, the view is swapped), but its column is kept — columns are never dropped — and new rows get its default. `check` reports a retired field as info, and `apply` never re-adds it. Delete the flag to revive it; a changed type becomes a `MODIFY`.
+- **Type and nullability changes** become `MODIFY COLUMN`. Narrowing ones (`String` → `Int64`, `Float64` → `Int64`) carry a `-- WARNING`: values that don't fit are truncated, or the mutation fails — and blocks the table's later mutations until killed — if a value doesn't convert. Making a field required turns existing `NULL`s into defaults.
+- **Not migratable:** editing `table`, `target`, `cluster`, `kafka`, `engine`, `order_by` or `sum_columns`, or the type of an `ORDER BY` field, is an error — that needs a new table or pipeline.
+
+`diff` never writes the contracts, only `{name}_v{N}_up.sql`/`_down.sql`. When nothing changes in ClickHouse (e.g. only `unknown_fields` changed), it writes nothing and `version` stays as it is.
 
 ---
 
