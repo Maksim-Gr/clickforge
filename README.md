@@ -76,13 +76,20 @@ This writes `video_events_up.sql` (the `streams` Kafka table, the `raw` replay b
 clickforge kafka video_events.json -c clickhouse_datalake -k kafka -o migrations/
 ```
 
+To keep evolving the pipeline as your messages change, start it from a [schema contract](#contract) instead — the same SQL, plus a contract that new samples are checked and migrated against:
+
+```bash
+clickforge contract init video_events.json --target kafka
+clickforge contract apply video_events.contract.json new_events.json
+```
+
 ## Usage
 
 ```bash
 clickforge <COMMAND> [OPTIONS] <INPUT>
 ```
 
-The `kafka`, `scan`, and `table` commands take a single `<INPUT>`. The `diff` command takes two positionals, `<OLD> <NEW>` (see the [`diff`](#diff) section).
+The `kafka`, `scan`, and `table` commands take a single `<INPUT>`; `diff` and `contract` take their own positionals (see their sections).
 
 `<INPUT>` is a path to a JSON/NDJSON file, or `-` to read from stdin. When reading from stdin, pass `--name` to set the table name (it defaults to `table`):
 
@@ -100,8 +107,8 @@ cat video_events.json | clickforge table - --name video_events -o migrations/
 | `kafka`   | **primary** | Generate the full Kafka→ClickHouse pipeline (streams, raw, datalake + materialized views) |
 | `scan`    | helper | Inspect JSON fields and pick a ClickHouse engine for a one-off table |
 | `table`   | helper | Generate a single `CREATE TABLE` migration from JSON |
-| `diff`    | helper | Generate `ALTER TABLE` migrations to evolve a table as your JSON schema changes |
-| `contract` | helper | Create a schema contract from a sample, check new samples against it, and migrate it as it changes |
+| `diff`    | helper | Generate `ALTER TABLE` migrations adding the columns new in a JSON sample |
+| `contract` | helper | Keep a reviewed schema contract, check new samples against it, and migrate it version by version |
 
 ---
 
@@ -239,81 +246,52 @@ clickforge diff [OPTIONS] <OLD> <NEW>
 clickforge diff video_events.json video_events_v2.json -n video_events
 ```
 
-Writes `{name}_alter_up.sql` (`ADD COLUMN`) and `{name}_alter_down.sql` (`DROP COLUMN`, reverse order). Removed columns and type changes are **not** migrated automatically — they are reported as warnings on stderr so you can review them by hand (dropping or retyping a populated column is destructive).
+Writes `{name}_alter_up.sql`/`_down.sql` that add the columns new in `<NEW>`, always as `Nullable`. Every other difference is reported and classified as by [`contract check`](#contract), with the same exit codes, but not migrated — retyping or dropping a populated column is destructive.
 
-> **Kafka pipelines:** `diff` alters a single, unqualified table and does not touch the `raw` → `datalake` materialized view. Applied to a `kafka` pipeline's `datalake` table, the new columns are added but stay empty, because the view never extracts them. Recreate the view with the new fields yourself.
+> **Kafka pipelines:** `diff` alters a single, unqualified table, not the `raw` → `datalake` view, so new columns would stay empty. Use [`contract apply`](#contract), which swaps the view too.
 
 ---
 
 ### `contract`
 
-A **schema contract** (`{name}.contract.json`) is the committed statement of the schema a table or Kafka pipeline expects. Generate it once from a sample, review and edit it by hand where inference guessed wrong, then check new samples against it.
+A **schema contract** (`{name}.contract.json`) is the committed, reviewed record of the schema a table or Kafka pipeline expects. New samples are checked against it, and each change becomes a versioned migration.
 
 ```bash
-clickforge contract init <INPUT> --target <kafka|table> [OPTIONS]
-clickforge contract check <CONTRACT> <SAMPLE>
-clickforge contract apply <CONTRACT> <SAMPLE> [--accept <FIELDS> | --accept-all] [-o <DIR>]
-clickforge contract diff <OLD> <NEW> [-o <DIR>]
+clickforge contract init  <SAMPLE> --target kafka|table   # contract + {name}_v1_up/down.sql
+clickforge contract check <CONTRACT> <SAMPLE>             # report only
+clickforge contract apply <CONTRACT> <SAMPLE> [--accept <FIELDS> | --accept-all]
+clickforge contract diff  <OLD> <NEW>                     # migrate a hand-edited contract
 ```
 
-`init` writes the contract plus `{name}_v1_up.sql`/`{name}_v1_down.sql` (the same SQL `kafka` or `table` would generate). It refuses to overwrite an existing contract. It takes the `kafka` command's `-n`, `-c`, `-k`, `-o` for `--target kafka`, and the `table` command's `-n`, `-e`, `--order-by`, `-c`, `-o` for `--target table`.
+`init` takes `-n`, `-c`, `-k`, `-o` for `--target kafka`, and `-n`, `-e`, `--order-by`, `-c`, `-o` for `--target table`. Every difference between the contract and a sample is classified:
 
-`check` reads the sample (or `-` for stdin), classifies every difference and writes nothing:
+| Class | Examples | `apply` |
+|---|---|---|
+| compatible | new field, missing or `null` in some records | applied |
+| attention | new field in every record · floats in an `Int64` field (widens to `Float64`) · required field sometimes `null` | only with `--accept`; a new field is still added, as `Nullable` |
+| breaking | required field absent · values that don't fit the type (`"abc"` for `Int64`, which `JSONExtract` would silently store as `0`) · any change to an `ORDER BY` field | never; nothing is written |
 
-| Contract vs sample | Class |
-|---|---|
-| New field, missing or `null` in some records | compatible |
-| New field present in every record | attention |
-| Integers where the contract has `Int64`/`UInt64` (widening to `Float64`) | attention |
-| Required field missing or `null` in some records | attention |
-| Required field absent from the sample | breaking |
-| Values that don't fit the contract's type (e.g. `"abc"` for `Int64`) | breaking |
-| An attention change on an `ORDER BY` column | breaking |
+A nullable field absent from a sample is not a change: samples are incomplete. The contract's `"unknown_fields"` decides what new fields are: `propose` (default), `ignore` or `reject`. Exit codes: `0` none or compatible, `2` attention, `3` breaking, `1` error.
 
-A nullable field absent from the sample is not a change: samples are incomplete by nature. The contract's `unknown_fields` setting decides what new fields are: `propose` (default, as above), `ignore` (reported as info) or `reject` (breaking).
-
-```
-Checking new_events.json against video_events.contract.json (v1)
-
-  breaking    user_id               sample has String values that don't fit Int64; they would be stored as defaults
-  attention   playback_position_ms  Int64 -> Float64 (widening; values are truncated until then)
-  compatible  device                new field Nullable(String)
-```
-
-Exit codes: `0` no changes or compatible only, `2` attention, `3` breaking, `1` error — so CI can gate on them.
-
-`apply` runs the same check, then writes `{name}_v{N}_up.sql`/`_down.sql` and rewrites the contract as version `N` (hand-edited settings such as `unknown_fields` are kept):
-
-- **Compatible** changes are always applied.
-- **Attention** changes are applied only for fields named in `--accept` (comma-separated) or with `--accept-all`; the rest are skipped and `apply` exits `2`. A new field present in every record is still added without `--accept`, as `Nullable`; accepting it makes it required.
-- **Breaking** changes are never applied: while there is one, `apply` writes nothing and exits `3`. Fix the producer, or edit the contract by hand.
-
-New fields become `ADD COLUMN`, widened or newly nullable fields `MODIFY COLUMN`; columns are never dropped, and existing rows are not backfilled (they keep the column's default). For a `kafka` contract the migration alters `datalake` and then swaps in the new `raw` → `datalake` view with `streams` detached meanwhile, so Kafka holds the messages and none are lost:
+`apply` writes `{name}_v{N}_up/down.sql` next to the contract and bumps its `version`. Columns are only added or modified, never dropped, and existing rows aren't backfilled. For `kafka`, the `raw` → `datalake` view is swapped with `streams` detached, so Kafka holds the messages meanwhile:
 
 ```sql
-ALTER TABLE `datalake`.`video_events` ON CLUSTER … ADD COLUMN IF NOT EXISTS `device` Nullable(String) AFTER `platform`;
-
-DETACH TABLE `streams`.`video_events` ON CLUSTER …;
-DROP VIEW IF EXISTS `raw`.`video_events_mv` ON CLUSTER … SYNC;
+ALTER TABLE `datalake`.`video_events` … ADD COLUMN IF NOT EXISTS `device` Nullable(String) AFTER `platform`;
+DETACH TABLE `streams`.`video_events` …;
+DROP VIEW IF EXISTS `raw`.`video_events_mv` … SYNC;
 CREATE MATERIALIZED VIEW IF NOT EXISTS `raw`.`video_events_mv` …;   -- now extracts `device`
-ATTACH TABLE `streams`.`video_events` ON CLUSTER …;
+ATTACH TABLE `streams`.`video_events` …;
 ```
 
-The down script restores the previous view first, then drops added columns and reverts `MODIFY`s, with a `-- WARNING` comment where reverting truncates values or turns `NULL`s into defaults. Migrations are written next to the contract unless `-o` is given, and `apply` refuses to overwrite an existing one.
+Down scripts restore the old view first, with a `-- WARNING` wherever reverting truncates values or turns `NULL`s into defaults.
 
-`diff` is how a person changes the contract on purpose — including breaking changes, which `apply` never makes. Edit the contract, bump its `version` by one, and diff it against the deployed version; every edit is applied, and the report shows what each one risks:
+**Changing the contract by hand** is how breaking changes are made, since `apply` never makes them: edit it, bump `version`, and `diff` it against the deployed version. To remove a field, mark it `"retired": true` rather than deleting it — it stops being extracted and its column is kept. Narrowing type changes carry a `-- WARNING` (the mutation fails if a value doesn't convert). The engine, `ORDER BY`, cluster and target can't be migrated.
 
 ```bash
 git show HEAD:video_events.contract.json > /tmp/old.json
-$EDITOR video_events.contract.json
+$EDITOR video_events.contract.json        # e.g. "retired": true on a field, "version": 2
 clickforge contract diff /tmp/old.json video_events.contract.json
 ```
-
-- **Removing a field:** mark it `"retired": true` instead of deleting it. It stops being extracted (for `kafka`, the view is swapped), but its column is kept — columns are never dropped — and new rows get its default. `check` reports a retired field as info, and `apply` never re-adds it. Delete the flag to revive it; a changed type becomes a `MODIFY`.
-- **Type and nullability changes** become `MODIFY COLUMN`. Narrowing ones (`String` → `Int64`, `Float64` → `Int64`) carry a `-- WARNING`: values that don't fit are truncated, or the mutation fails — and blocks the table's later mutations until killed — if a value doesn't convert. Making a field required turns existing `NULL`s into defaults.
-- **Not migratable:** editing `table`, `target`, `cluster`, `kafka`, `engine`, `order_by` or `sum_columns`, or the type of an `ORDER BY` field, is an error — that needs a new table or pipeline.
-
-`diff` never writes the contracts, only `{name}_v{N}_up.sql`/`_down.sql`. When nothing changes in ClickHouse (e.g. only `unknown_fields` changed), it writes nothing and `version` stays as it is.
 
 ---
 
