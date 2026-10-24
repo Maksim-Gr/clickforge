@@ -240,6 +240,8 @@ clickforge diff video_events.json video_events_v2.json -n video_events
 
 Writes `{name}_alter_up.sql` (`ADD COLUMN`) and `{name}_alter_down.sql` (`DROP COLUMN`, reverse order). Removed columns and type changes are **not** migrated automatically — they are reported as warnings on stderr so you can review them by hand (dropping or retyping a populated column is destructive).
 
+> **Kafka pipelines:** `diff` alters a single, unqualified table and does not touch the `raw` → `datalake` materialized view. Applied to a `kafka` pipeline's `datalake` table, the new columns are added but stay empty, because the view never extracts them. Recreate the view with the new fields yourself.
+
 ---
 
 ## Type Inference
