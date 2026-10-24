@@ -52,6 +52,9 @@ pub struct Field {
     pub nullable: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub low_cardinality: bool,
+    /// No longer extracted, but its column is kept: columns are never dropped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
 }
 
 /// `ColumnType` as it is spelled in a contract: `{"type": "Int64"}`,
@@ -125,11 +128,16 @@ impl Field {
 }
 
 impl Contract {
-    /// The schema this contract deploys, for generating its DDL.
+    /// The schema of the fields this contract extracts (retired ones are left out).
     pub fn schema(&self) -> InferredSchema {
         InferredSchema {
             table_name: self.table.clone(),
-            columns: self.fields.iter().map(Field::column).collect(),
+            columns: self
+                .fields
+                .iter()
+                .filter(|f| !f.retired)
+                .map(Field::column)
+                .collect(),
             record_count: 0,
         }
     }
@@ -160,6 +168,7 @@ impl Contract {
                     ty: (&c.ch_type).into(),
                     nullable: c.nullable,
                     low_cardinality: c.low_cardinality,
+                    retired: false,
                 })
                 .collect(),
         }
@@ -207,6 +216,17 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
     let mut changes = Vec::new();
 
     for field in &contract.fields {
+        if field.retired {
+            if sample.columns.iter().any(|c| c.name == field.name) {
+                changes.push(Change {
+                    class: ChangeClass::Info,
+                    field: field.name.clone(),
+                    message: "retired field, ignored".to_string(),
+                    proposed: None,
+                });
+            }
+            continue;
+        }
         let mut found: Vec<(ChangeClass, String)> = Vec::new();
         let expected: ColumnType = (&field.ty).into();
         let mut proposed = field.clone();
@@ -303,6 +323,7 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
             ty: (&col.ch_type).into(),
             nullable: col.nullable,
             low_cardinality: col.low_cardinality,
+            retired: false,
         });
         changes.push(Change {
             class,
@@ -387,6 +408,153 @@ pub fn next_version(
     })
 }
 
+/// Classifies every hand edit from the deployed contract `old` to `new`, for the
+/// report of `contract diff`; every edit is applied, whatever its class.
+///
+/// Errors on edits a migration can't make: a field deleted instead of retired, a
+/// changed table, target, cluster, kafka, engine, ORDER BY or SUM columns, a type or
+/// nullability change on an ORDER BY field, or a new field that starts retired.
+pub fn diff(old: &Contract, new: &Contract) -> Result<Vec<Change>, String> {
+    let settings = [
+        ("table", old.table != new.table),
+        ("target", old.target != new.target),
+        ("cluster", old.cluster != new.cluster),
+        ("kafka", old.kafka != new.kafka),
+        ("engine", old.engine != new.engine),
+        ("order_by", old.order_by != new.order_by),
+        ("sum_columns", old.sum_columns != new.sum_columns),
+    ];
+    if let Some((setting, _)) = settings.iter().find(|(_, changed)| *changed) {
+        return Err(format!(
+            "`{setting}` changed; that needs a new table or pipeline, not a migration"
+        ));
+    }
+    if let Some(deleted) = old
+        .fields
+        .iter()
+        .find(|f| !new.fields.iter().any(|n| n.name == f.name))
+    {
+        return Err(format!(
+            "field `{}` was deleted; mark it \"retired\": true instead (its column is kept)",
+            deleted.name
+        ));
+    }
+
+    let mut changes = Vec::new();
+    for field in &new.fields {
+        let ty: ColumnType = (&field.ty).into();
+        let Some(old_field) = old.fields.iter().find(|f| f.name == field.name) else {
+            if field.retired {
+                return Err(format!("new field `{}` can't start retired", field.name));
+            }
+            let (class, message) = if field.nullable {
+                (
+                    ChangeClass::Compatible,
+                    format!("new field {}", field.column().ch_type_str()),
+                )
+            } else {
+                (
+                    ChangeClass::Attention,
+                    format!(
+                        "new required field {}; existing rows get its default",
+                        field.column().ch_type_str()
+                    ),
+                )
+            };
+            changes.push(Change {
+                class,
+                field: field.name.clone(),
+                message,
+                proposed: None,
+            });
+            continue;
+        };
+
+        if (old_field.ty != field.ty || old_field.nullable != field.nullable)
+            && old.order_by.contains(&field.name)
+        {
+            return Err(format!(
+                "`{}` is in ORDER BY; ClickHouse can't change its type or nullability",
+                field.name
+            ));
+        }
+        let mut found: Vec<(ChangeClass, String)> = Vec::new();
+        if old_field.ty != field.ty {
+            let old_ty: ColumnType = (&old_field.ty).into();
+            let (from, to) = (old_ty.as_str(), ty.as_str());
+            found.push(if merge_types(&old_ty, &ty) == ty {
+                (
+                    ChangeClass::Attention,
+                    format!("{from} -> {to} (rewrites the column)"),
+                )
+            } else if is_numeric_widening(&ty, &old_ty) {
+                (
+                    ChangeClass::Breaking,
+                    format!("{from} -> {to}; values that don't fit are truncated"),
+                )
+            } else {
+                (
+                    ChangeClass::Breaking,
+                    format!("{from} -> {to}; the mutation fails if any value doesn't convert"),
+                )
+            });
+        }
+        match (old_field.nullable, field.nullable) {
+            (false, true) => found.push((ChangeClass::Attention, "becomes nullable".to_string())),
+            (true, false) => found.push((
+                ChangeClass::Breaking,
+                "becomes required; existing NULLs become defaults".to_string(),
+            )),
+            _ => {}
+        }
+        if old_field.low_cardinality != field.low_cardinality {
+            let state = if field.low_cardinality { "on" } else { "off" };
+            found.push((ChangeClass::Info, format!("LowCardinality {state}")));
+        }
+        match (old_field.retired, field.retired) {
+            (false, true) => found.push((
+                ChangeClass::Info,
+                "retired: no longer extracted; its column is kept".to_string(),
+            )),
+            (true, false) => found.push((
+                ChangeClass::Compatible,
+                "revived: extracted again".to_string(),
+            )),
+            _ => {}
+        }
+
+        let Some(class) = found.iter().map(|(class, _)| *class).max() else {
+            continue;
+        };
+        changes.push(Change {
+            class,
+            field: field.name.clone(),
+            message: found
+                .into_iter()
+                .map(|(_, m)| m)
+                .collect::<Vec<_>>()
+                .join("; "),
+            proposed: None,
+        });
+    }
+
+    if old.unknown_fields != new.unknown_fields {
+        // Serializing a unit enum variant can't fail.
+        let name = |u: &UnknownFields| serde_json::to_string(u).expect("serializes");
+        changes.push(Change {
+            class: ChangeClass::Info,
+            field: "unknown_fields".to_string(),
+            message: format!(
+                "{} -> {}",
+                name(&old.unknown_fields),
+                name(&new.unknown_fields)
+            ),
+            proposed: None,
+        });
+    }
+    Ok(changes)
+}
+
 enum TypeFit {
     Fits,
     /// Fits once integers widen the column to this type.
@@ -407,7 +575,7 @@ fn fit_type(expected: &ColumnType, observed: &ColumnType) -> TypeFit {
 }
 
 /// True when `to` only differs from `from` by integers widening to `Float64`.
-fn is_numeric_widening(from: &ColumnType, to: &ColumnType) -> bool {
+pub fn is_numeric_widening(from: &ColumnType, to: &ColumnType) -> bool {
     match (from, to) {
         (ColumnType::Int64 | ColumnType::UInt64, ColumnType::Float64) => true,
         (ColumnType::Array(a), ColumnType::Array(b))
@@ -577,6 +745,196 @@ mod tests {
         c.unknown_fields = UnknownFields::Ignore;
         let n = next(&c, r#"[{"a":1,"b":2}]"#, Accept::All).unwrap();
         assert!(n.contract.is_none());
+    }
+
+    #[test]
+    fn retired_field_in_sample_is_info() {
+        let mut c = contract(r#"[{"a":1,"b":2}]"#, &[]);
+        c.fields[1].retired = true;
+        assert_eq!(
+            changes(&c, r#"[{"a":1,"b":"now a string"}]"#),
+            vec![(ChangeClass::Info, "b".to_string())]
+        );
+    }
+
+    #[test]
+    fn required_retired_field_absent_from_sample_is_no_change() {
+        let mut c = contract(r#"[{"a":1,"b":2}]"#, &[]);
+        c.fields[1].retired = true;
+        assert!(changes(&c, r#"[{"a":1}]"#).is_empty());
+    }
+
+    #[test]
+    fn schema_leaves_out_retired_fields() {
+        let mut c = contract(r#"[{"a":1,"b":2}]"#, &[]);
+        c.fields[0].retired = true;
+        let names: Vec<_> = c.schema().columns.into_iter().map(|c| c.name).collect();
+        assert_eq!(names, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn retired_is_written_only_when_set() {
+        let mut c = contract(r#"[{"a":1,"b":2}]"#, &[]);
+        c.fields[1].retired = true;
+        let v: serde_json::Value = serde_json::from_str(&c.to_json()).unwrap();
+        assert!(v["fields"][0].get("retired").is_none());
+        assert_eq!(v["fields"][1]["retired"], true);
+        assert_eq!(Contract::from_json(&c.to_json()).unwrap(), c);
+    }
+
+    /// `old`'s edits as (class, field), or the error.
+    fn diff_of(
+        old: &Contract,
+        edit: impl FnOnce(&mut Contract),
+    ) -> Result<Vec<(ChangeClass, String)>, String> {
+        let mut new = old.clone();
+        new.version += 1;
+        edit(&mut new);
+        diff(old, &new).map(|cs| cs.into_iter().map(|c| (c.class, c.field)).collect())
+    }
+
+    fn new_field(name: &str, ty: FieldType, nullable: bool) -> Field {
+        Field {
+            name: name.to_string(),
+            ty,
+            nullable,
+            low_cardinality: false,
+            retired: false,
+        }
+    }
+
+    #[test]
+    fn diff_of_identical_contracts_is_empty() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        assert_eq!(diff_of(&c, |_| {}), Ok(vec![]));
+    }
+
+    #[test]
+    fn diff_rejects_deleted_field() {
+        let c = contract(r#"[{"a":1,"b":2}]"#, &[]);
+        let err = diff_of(&c, |n| {
+            n.fields.pop();
+        })
+        .unwrap_err();
+        assert!(err.contains("`b`") && err.contains("retired"), "{err}");
+    }
+
+    #[test]
+    fn diff_rejects_setting_changes() {
+        let c = contract(r#"[{"a":1,"b":2}]"#, &["a"]);
+        type Edit = fn(&mut Contract);
+        let edits: Vec<(&str, Edit)> = vec![
+            ("table", |n| n.table = "other".to_string()),
+            ("target", |n| n.target = Target::Kafka),
+            ("cluster", |n| n.cluster = Some("ck".to_string())),
+            ("kafka", |n| n.kafka = Some("k".to_string())),
+            ("engine", |n| n.engine = TableEngine::ReplacingMergeTree),
+            ("order_by", |n| n.order_by = vec!["b".to_string()]),
+            ("sum_columns", |n| n.sum_columns = vec!["b".to_string()]),
+        ];
+        for (setting, edit) in edits {
+            let err = diff_of(&c, edit).unwrap_err();
+            assert!(err.contains(setting), "{setting}: {err}");
+        }
+    }
+
+    #[test]
+    fn diff_rejects_type_change_on_order_by_field() {
+        let c = contract(r#"[{"a":1}]"#, &["a"]);
+        let err = diff_of(&c, |n| n.fields[0].ty = FieldType::Float64).unwrap_err();
+        assert!(err.contains("ORDER BY"), "{err}");
+        let err = diff_of(&c, |n| n.fields[0].nullable = true).unwrap_err();
+        assert!(err.contains("ORDER BY"), "{err}");
+    }
+
+    #[test]
+    fn diff_rejects_new_field_that_starts_retired() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let err = diff_of(&c, |n| {
+            let mut b = new_field("b", FieldType::String, true);
+            b.retired = true;
+            n.fields.push(b);
+        })
+        .unwrap_err();
+        assert!(err.contains("`b`"), "{err}");
+    }
+
+    #[test]
+    fn diff_classifies_added_fields() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let result = diff_of(&c, |n| {
+            n.fields.push(new_field("b", FieldType::String, true));
+            n.fields.push(new_field("c", FieldType::Int64, false));
+        });
+        assert_eq!(
+            result,
+            Ok(vec![
+                (ChangeClass::Compatible, "b".to_string()),
+                (ChangeClass::Attention, "c".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn diff_classifies_retiring_and_reviving() {
+        let c = contract(r#"[{"a":1,"b":2}]"#, &[]);
+        assert_eq!(
+            diff_of(&c, |n| n.fields[1].retired = true),
+            Ok(vec![(ChangeClass::Info, "b".to_string())])
+        );
+        let mut retired = c.clone();
+        retired.fields[1].retired = true;
+        assert_eq!(
+            diff_of(&retired, |n| n.fields[1].retired = false),
+            Ok(vec![(ChangeClass::Compatible, "b".to_string())])
+        );
+    }
+
+    #[test]
+    fn diff_classifies_type_changes() {
+        let c = contract(r#"[{"a":1,"s":"x","f":1.5}]"#, &[]);
+        assert_eq!(
+            diff_of(&c, |n| {
+                n.fields[0].ty = FieldType::Float64; // widening
+                n.fields[1].ty = FieldType::Int64; // String -> Int64 may not convert
+                n.fields[2].ty = FieldType::Int64; // narrowing truncates
+            }),
+            Ok(vec![
+                (ChangeClass::Attention, "a".to_string()),
+                (ChangeClass::Breaking, "s".to_string()),
+                (ChangeClass::Breaking, "f".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn diff_classifies_nullability_changes() {
+        let c = contract("{\"a\":1,\"b\":2}\n{\"a\":1}", &[]); // b nullable
+        assert_eq!(
+            diff_of(&c, |n| {
+                n.fields[0].nullable = true;
+                n.fields[1].nullable = false;
+            }),
+            Ok(vec![
+                (ChangeClass::Attention, "a".to_string()),
+                (ChangeClass::Breaking, "b".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn diff_classifies_low_cardinality_and_unknown_fields_as_info() {
+        let c = contract(r#"[{"a":"x"}]"#, &[]);
+        assert_eq!(
+            diff_of(&c, |n| {
+                n.fields[0].low_cardinality = true;
+                n.unknown_fields = UnknownFields::Ignore;
+            }),
+            Ok(vec![
+                (ChangeClass::Info, "a".to_string()),
+                (ChangeClass::Info, "unknown_fields".to_string()),
+            ])
+        );
     }
 
     #[test]
