@@ -1,5 +1,5 @@
 use crate::inference::merge_types;
-use crate::schema::{ColumnType, EngineConfig, InferredSchema, TableEngine};
+use crate::schema::{Column, ColumnType, EngineConfig, InferredSchema, TableEngine};
 use serde::{Deserialize, Serialize};
 
 /// The committed statement of the schema a table or Kafka pipeline expects.
@@ -44,7 +44,7 @@ pub enum UnknownFields {
     Reject,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     #[serde(flatten)]
@@ -56,7 +56,7 @@ pub struct Field {
 
 /// `ColumnType` as it is spelled in a contract: `{"type": "Int64"}`,
 /// `{"type": "Array", "of": {...}}`, `{"type": "Map", "key": {...}, "value": {...}}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum FieldType {
     String,
@@ -112,7 +112,28 @@ impl From<&FieldType> for ColumnType {
     }
 }
 
+impl Field {
+    pub fn column(&self) -> Column {
+        Column {
+            name: self.name.clone(),
+            ch_type: (&self.ty).into(),
+            nullable: self.nullable,
+            low_cardinality: self.low_cardinality,
+            type_observed: true,
+        }
+    }
+}
+
 impl Contract {
+    /// The schema this contract deploys, for generating its DDL.
+    pub fn schema(&self) -> InferredSchema {
+        InferredSchema {
+            table_name: self.table.clone(),
+            columns: self.fields.iter().map(Field::column).collect(),
+            record_count: 0,
+        }
+    }
+
     /// Version 1 of a contract for `schema`, deployed as `target` with `engine`.
     pub fn from_schema(
         schema: &InferredSchema,
@@ -175,6 +196,9 @@ pub struct Change {
     pub class: ChangeClass,
     pub field: String,
     pub message: String,
+    /// The field as the next contract version would have it; `None` when the change
+    /// can't be applied (breaking, info).
+    pub proposed: Option<Field>,
 }
 
 /// Classifies every difference between `contract` and the schema inferred from a
@@ -185,6 +209,7 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
     for field in &contract.fields {
         let mut found: Vec<(ChangeClass, String)> = Vec::new();
         let expected: ColumnType = (&field.ty).into();
+        let mut proposed = field.clone();
         match sample.columns.iter().find(|c| c.name == field.name) {
             None if !field.nullable => found.push((
                 ChangeClass::Breaking,
@@ -194,9 +219,31 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
             None => {}
             Some(col) => {
                 if col.type_observed {
-                    found.extend(check_type(&expected, &col.ch_type));
+                    match fit_type(&expected, &col.ch_type) {
+                        TypeFit::Fits => {}
+                        TypeFit::Widens(widened) => {
+                            found.push((
+                                ChangeClass::Attention,
+                                format!(
+                                    "{} -> {} (widening; values are truncated until then)",
+                                    expected.as_str(),
+                                    widened.as_str()
+                                ),
+                            ));
+                            proposed.ty = (&widened).into();
+                        }
+                        TypeFit::Breaks => found.push((
+                            ChangeClass::Breaking,
+                            format!(
+                                "sample has {} values that don't fit {}; they would be stored as defaults",
+                                col.ch_type.as_str(),
+                                expected.as_str()
+                            ),
+                        )),
+                    }
                 }
                 if !field.nullable && col.nullable {
+                    proposed.nullable = true;
                     found.push((
                         ChangeClass::Attention,
                         format!(
@@ -224,6 +271,7 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
             class,
             field: field.name.clone(),
             message,
+            proposed: (class == ChangeClass::Attention).then_some(proposed),
         });
     }
 
@@ -250,39 +298,111 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
                 "unknown field (unknown_fields: reject)".to_string(),
             ),
         };
+        let proposed = (contract.unknown_fields == UnknownFields::Propose).then(|| Field {
+            name: col.name.clone(),
+            ty: (&col.ch_type).into(),
+            nullable: col.nullable,
+            low_cardinality: col.low_cardinality,
+        });
         changes.push(Change {
             class,
             field: col.name.clone(),
             message,
+            proposed,
         });
     }
 
     changes
 }
 
-/// `None` when values of type `observed` fit a column of type `expected`.
-fn check_type(expected: &ColumnType, observed: &ColumnType) -> Option<(ChangeClass, String)> {
+/// Which attention changes `next_version` may apply.
+pub enum Accept<'a> {
+    Fields(&'a [String]),
+    All,
+}
+
+pub struct NextVersion {
+    /// `None` when there is nothing to apply.
+    pub contract: Option<Contract>,
+    /// Fields whose attention change was left out because it wasn't accepted.
+    pub skipped: Vec<String>,
+}
+
+/// The next version of `contract`, with `changes` (from `check`) applied: every
+/// compatible change, and attention changes whose field is accepted. A new field that
+/// isn't accepted is still added, as nullable. Breaking changes are never applied;
+/// callers refuse to apply anything while one is present.
+///
+/// Errors when an accepted field has no attention change.
+pub fn next_version(
+    contract: &Contract,
+    changes: &[Change],
+    accept: Accept,
+) -> Result<NextVersion, String> {
+    let needs_attention = |name: &str| {
+        changes
+            .iter()
+            .any(|c| c.class == ChangeClass::Attention && c.field == name)
+    };
+    if let Accept::Fields(names) = accept
+        && let Some(name) = names.iter().find(|n| !needs_attention(n))
+    {
+        return Err(format!(
+            "--accept {name}: no change to `{name}` needs attention"
+        ));
+    }
+    let accepted = |name: &str| match accept {
+        Accept::Fields(names) => names.iter().any(|n| n == name),
+        Accept::All => true,
+    };
+
+    let mut next = contract.clone();
+    let mut applied = false;
+    let mut skipped = Vec::new();
+    for change in changes {
+        let Some(proposed) = &change.proposed else {
+            continue;
+        };
+        let existing = next.fields.iter_mut().find(|f| f.name == proposed.name);
+        let mut proposed = proposed.clone();
+        if change.class == ChangeClass::Attention && !accepted(&change.field) {
+            if existing.is_some() {
+                skipped.push(change.field.clone());
+                continue;
+            }
+            // A new field is always safe to add as nullable; accepting it makes it required.
+            proposed.nullable = true;
+        }
+        match existing {
+            Some(field) => *field = proposed,
+            None => next.fields.push(proposed),
+        }
+        applied = true;
+    }
+
+    next.version += 1;
+    Ok(NextVersion {
+        contract: applied.then_some(next),
+        skipped,
+    })
+}
+
+enum TypeFit {
+    Fits,
+    /// Fits once integers widen the column to this type.
+    Widens(ColumnType),
+    Breaks,
+}
+
+/// Whether values of type `observed` fit a column of type `expected`.
+fn fit_type(expected: &ColumnType, observed: &ColumnType) -> TypeFit {
     let widened = merge_types(expected, observed);
     if &widened == expected {
-        None
+        TypeFit::Fits
     } else if is_numeric_widening(expected, &widened) {
-        Some((
-            ChangeClass::Attention,
-            format!(
-                "{} -> {} (widening; values are truncated until then)",
-                expected.as_str(),
-                widened.as_str()
-            ),
-        ))
+        TypeFit::Widens(widened)
     } else {
-        Some((
-            ChangeClass::Breaking,
-            format!(
-                "sample has {} values that don't fit {}; they would be stored as defaults",
-                observed.as_str(),
-                expected.as_str()
-            ),
-        ))
+        TypeFit::Breaks
     }
 }
 
@@ -321,6 +441,142 @@ mod tests {
             .into_iter()
             .map(|c| (c.class, c.field))
             .collect()
+    }
+
+    fn next(contract: &Contract, json: &str, accept: Accept) -> Result<NextVersion, String> {
+        let sample = infer_schema(json, "t").unwrap();
+        next_version(contract, &check(contract, &sample), accept)
+    }
+
+    fn field<'a>(contract: &'a Contract, name: &str) -> &'a Field {
+        contract.fields.iter().find(|f| f.name == name).unwrap()
+    }
+
+    #[test]
+    fn next_version_adds_compatible_field_and_bumps_version() {
+        let mut c = contract(r#"[{"a":1}]"#, &[]);
+        c.unknown_fields = UnknownFields::Propose;
+        let n = next(&c, "{\"a\":1,\"b\":\"x\"}\n{\"a\":2}", Accept::Fields(&[])).unwrap();
+        let n = n.contract.expect("a next version");
+        assert_eq!(n.version, 2);
+        assert_eq!(n.fields.len(), 2);
+        assert_eq!(field(&n, "b").ty, FieldType::String);
+        assert!(field(&n, "b").nullable);
+    }
+
+    #[test]
+    fn next_version_keeps_settings_and_untouched_fields() {
+        let mut c = contract(r#"[{"a":1,"z":true}]"#, &["a"]);
+        c.cluster = Some("ck".to_string());
+        c.fields[1].low_cardinality = true;
+        let n = next(
+            &c,
+            "{\"a\":1,\"z\":true,\"b\":1}\n{\"a\":1,\"z\":false}",
+            Accept::Fields(&[]),
+        )
+        .unwrap()
+        .contract
+        .unwrap();
+        assert_eq!(n.cluster, c.cluster);
+        assert_eq!(n.order_by, c.order_by);
+        assert_eq!(n.unknown_fields, c.unknown_fields);
+        assert_eq!(n.fields[..2], c.fields[..]);
+    }
+
+    #[test]
+    fn next_version_is_none_without_changes() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let n = next(&c, r#"[{"a":2}]"#, Accept::Fields(&[])).unwrap();
+        assert!(n.contract.is_none());
+        assert!(n.skipped.is_empty());
+    }
+
+    #[test]
+    fn next_version_skips_unaccepted_widening() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let n = next(&c, r#"[{"a":1.5}]"#, Accept::Fields(&[])).unwrap();
+        assert!(n.contract.is_none());
+        assert_eq!(n.skipped, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn next_version_applies_accepted_widening() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let n = next(&c, r#"[{"a":1.5}]"#, Accept::Fields(&["a".to_string()]))
+            .unwrap()
+            .contract
+            .unwrap();
+        assert_eq!(field(&n, "a").ty, FieldType::Float64);
+        assert!(!field(&n, "a").nullable);
+    }
+
+    #[test]
+    fn next_version_combines_widening_and_nullability() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let n = next(&c, "{\"a\":1.5}\n{}", Accept::All)
+            .unwrap()
+            .contract
+            .unwrap();
+        assert_eq!(field(&n, "a").ty, FieldType::Float64);
+        assert!(field(&n, "a").nullable);
+    }
+
+    #[test]
+    fn next_version_adds_unaccepted_required_field_as_nullable() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let n = next(&c, r#"[{"a":1,"b":"x"}]"#, Accept::Fields(&[])).unwrap();
+        assert!(n.skipped.is_empty());
+        assert!(field(&n.contract.unwrap(), "b").nullable);
+    }
+
+    #[test]
+    fn next_version_adds_accepted_required_field_as_required() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let n = next(
+            &c,
+            r#"[{"a":1,"b":"x"}]"#,
+            Accept::Fields(&["b".to_string()]),
+        )
+        .unwrap()
+        .contract
+        .unwrap();
+        assert!(!field(&n, "b").nullable);
+    }
+
+    #[test]
+    fn next_version_applies_compatible_and_skips_unaccepted() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let n = next(
+            &c,
+            "{\"a\":1.5,\"b\":\"x\"}\n{\"a\":2}",
+            Accept::Fields(&[]),
+        )
+        .unwrap();
+        assert_eq!(n.skipped, vec!["a".to_string()]);
+        let n = n.contract.unwrap();
+        assert_eq!(field(&n, "a").ty, FieldType::Int64);
+        assert!(field(&n, "b").nullable);
+    }
+
+    #[test]
+    fn next_version_rejects_accepting_a_field_without_attention_change() {
+        let c = contract(r#"[{"a":1}]"#, &[]);
+        let err = next(
+            &c,
+            r#"[{"a":1.5}]"#,
+            Accept::Fields(&["a_typo".to_string()]),
+        )
+        .err()
+        .expect("an error");
+        assert!(err.contains("a_typo"), "{err}");
+    }
+
+    #[test]
+    fn next_version_ignores_info_changes() {
+        let mut c = contract(r#"[{"a":1}]"#, &[]);
+        c.unknown_fields = UnknownFields::Ignore;
+        let n = next(&c, r#"[{"a":1,"b":2}]"#, Accept::All).unwrap();
+        assert!(n.contract.is_none());
     }
 
     #[test]

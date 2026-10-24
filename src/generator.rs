@@ -13,6 +13,11 @@ pub fn kafka_pipeline(schema: &InferredSchema, cluster: String, kafka: String) -
     }
 }
 
+/// The Kafka pipeline's `raw` → `datalake` materialized view for `schema`'s table.
+pub fn kafka_raw_mv(schema: &InferredSchema, cluster: String, kafka: String) -> String {
+    Generator::new(schema, cluster, kafka).raw_mv()
+}
+
 /// A single CREATE TABLE / DROP TABLE migration for `schema`'s table.
 pub fn table_migration(
     schema: &InferredSchema,

@@ -101,7 +101,7 @@ cat video_events.json | clickforge table - --name video_events -o migrations/
 | `scan`    | helper | Inspect JSON fields and pick a ClickHouse engine for a one-off table |
 | `table`   | helper | Generate a single `CREATE TABLE` migration from JSON |
 | `diff`    | helper | Generate `ALTER TABLE` migrations to evolve a table as your JSON schema changes |
-| `contract` | helper | Create a schema contract from a sample, and check new samples against it |
+| `contract` | helper | Create a schema contract from a sample, check new samples against it, and apply the changes as migrations |
 
 ---
 
@@ -252,6 +252,7 @@ A **schema contract** (`{name}.contract.json`) is the committed statement of the
 ```bash
 clickforge contract init <INPUT> --target <kafka|table> [OPTIONS]
 clickforge contract check <CONTRACT> <SAMPLE>
+clickforge contract apply <CONTRACT> <SAMPLE> [--accept <FIELDS> | --accept-all] [-o <DIR>]
 ```
 
 `init` writes the contract plus `{name}_v1_up.sql`/`{name}_v1_down.sql` (the same SQL `kafka` or `table` would generate). It refuses to overwrite an existing contract. It takes the `kafka` command's `-n`, `-c`, `-k`, `-o` for `--target kafka`, and the `table` command's `-n`, `-e`, `--order-by`, `-c`, `-o` for `--target table`.
@@ -279,6 +280,25 @@ Checking new_events.json against video_events.contract.json (v1)
 ```
 
 Exit codes: `0` no changes or compatible only, `2` attention, `3` breaking, `1` error — so CI can gate on them.
+
+`apply` runs the same check, then writes `{name}_v{N}_up.sql`/`_down.sql` and rewrites the contract as version `N` (hand-edited settings such as `unknown_fields` are kept):
+
+- **Compatible** changes are always applied.
+- **Attention** changes are applied only for fields named in `--accept` (comma-separated) or with `--accept-all`; the rest are skipped and `apply` exits `2`. A new field present in every record is still added without `--accept`, as `Nullable`; accepting it makes it required.
+- **Breaking** changes are never applied: while there is one, `apply` writes nothing and exits `3`. Fix the producer, or edit the contract by hand.
+
+New fields become `ADD COLUMN`, widened or newly nullable fields `MODIFY COLUMN`; columns are never dropped, and existing rows are not backfilled (they keep the column's default). For a `kafka` contract the migration alters `datalake` and then swaps in the new `raw` → `datalake` view with `streams` detached meanwhile, so Kafka holds the messages and none are lost:
+
+```sql
+ALTER TABLE `datalake`.`video_events` ON CLUSTER … ADD COLUMN IF NOT EXISTS `device` Nullable(String) AFTER `platform`;
+
+DETACH TABLE `streams`.`video_events` ON CLUSTER …;
+DROP VIEW IF EXISTS `raw`.`video_events_mv` ON CLUSTER … SYNC;
+CREATE MATERIALIZED VIEW IF NOT EXISTS `raw`.`video_events_mv` …;   -- now extracts `device`
+ATTACH TABLE `streams`.`video_events` ON CLUSTER …;
+```
+
+The down script restores the previous view first, then drops added columns and reverts `MODIFY`s, with a `-- WARNING` comment where reverting truncates values or turns `NULL`s into defaults. Migrations are written next to the contract unless `-o` is given, and `apply` refuses to overwrite an existing one.
 
 ---
 
