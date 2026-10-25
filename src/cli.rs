@@ -8,13 +8,36 @@ const STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default().bold())
     .placeholder(AnsiColor::Cyan.on_default());
 
+const CLI_LONG_ABOUT: &str = "\
+Generate the Kafka→ClickHouse ingestion pipeline from a JSON sample — the streams/raw/datalake tables and the materialized views that connect them.
+
+Commands:
+  kafka    Generate the full Kafka→ClickHouse ingestion pipeline (primary)
+  scan     Helper: inspect fields and pick an engine
+  table    Helper: generate a single CREATE TABLE migration
+  diff     Helper: generate ALTER TABLE migrations as the schema evolves
+  contract Create a schema contract, check samples against it, apply or diff changes
+
+Tip: run `clickforge kafka <file>` to generate the whole pipeline.";
+
+const CLI_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge kafka video_events.json          Generate the full Kafka→ClickHouse ingestion pipeline
+  clickforge scan video_events.json           Helper: inspect fields, suggest engines, then pick one to generate
+  clickforge table video_events.json          Helper: generate a single CREATE TABLE migration
+  clickforge diff old.json new.json -n events Helper: generate an additive ALTER TABLE migration
+  clickforge contract init events.json --target kafka
+                                              Create a schema contract and its first migration
+
+New here? Run `clickforge kafka <file>` to generate the pipeline.";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "clickforge",
     about = "Generate a Kafka→ClickHouse ingestion pipeline (and helper migrations) from a JSON sample",
-    long_about = "Generate the Kafka→ClickHouse ingestion pipeline from a JSON sample — the streams/raw/datalake tables and the materialized views that connect them.\n\nCommands:\n  kafka    Generate the full Kafka→ClickHouse ingestion pipeline (primary)\n  scan     Helper: inspect fields and pick an engine\n  table    Helper: generate a single CREATE TABLE migration\n  diff     Helper: generate ALTER TABLE migrations as the schema evolves\n  contract Create a schema contract, check samples against it, apply or diff changes\n\nTip: run `clickforge kafka <file>` to generate the whole pipeline.",
+    long_about = CLI_LONG_ABOUT,
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "EXAMPLES:\n  clickforge kafka video_events.json          Generate the full Kafka→ClickHouse ingestion pipeline\n  clickforge scan video_events.json           Helper: inspect fields, suggest engines, then pick one to generate\n  clickforge table video_events.json          Helper: generate a single CREATE TABLE migration\n  clickforge diff old.json new.json -n events Helper: generate an additive ALTER TABLE migration\n  clickforge contract init events.json --target kafka\n                                              Create a schema contract and its first migration\n\nNew here? Run `clickforge kafka <file>` to generate the pipeline.",
+    after_help = CLI_AFTER_HELP,
     styles = STYLES
 )]
 pub struct Cli {
@@ -57,9 +80,17 @@ pub enum ContractTarget {
     Table,
 }
 
+const CONTRACT_INIT_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge contract init video_events.json --target kafka             Contract for the Kafka pipeline, plus video_events_v1_up/down.sql
+  clickforge contract init video_events.json --target table -c my_cluster
+                                                                          Contract for a single table
+
+Writes {name}.contract.json; commit it and edit it by hand where inference guessed wrong.";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge contract init video_events.json --target kafka             Contract for the Kafka pipeline, plus video_events_v1_up/down.sql\n  clickforge contract init video_events.json --target table -c my_cluster\n                                                                          Contract for a single table\n\nWrites {name}.contract.json; commit it and edit it by hand where inference guessed wrong."
+    after_help = CONTRACT_INIT_AFTER_HELP
 )]
 pub struct ContractInitArgs {
     /// Path to a JSON array or NDJSON file (or `-` for stdin)
@@ -87,9 +118,20 @@ pub struct ContractInitArgs {
     pub output_dir: PathBuf,
 }
 
+const CONTRACT_CHECK_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge contract check video_events.contract.json new_events.json
+  cat new_events.ndjson | clickforge contract check video_events.contract.json -
+
+EXIT CODES:
+  0  no changes, or compatible changes only
+  1  error
+  2  changes that need attention
+  3  breaking changes";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge contract check video_events.contract.json new_events.json\n  cat new_events.ndjson | clickforge contract check video_events.contract.json -\n\nEXIT CODES:\n  0  no changes, or compatible changes only\n  1  error\n  2  changes that need attention\n  3  breaking changes"
+    after_help = CONTRACT_CHECK_AFTER_HELP
 )]
 pub struct ContractCheckArgs {
     /// Path to the schema contract
@@ -98,9 +140,17 @@ pub struct ContractCheckArgs {
     pub sample: PathBuf,
 }
 
+const KAFKA_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge kafka video_events.json                              Generate the pipeline, writing migration files
+  clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/
+                                                                   Override table/cluster/kafka names and output dir
+  clickforge kafka video_events.json --stdout                     Print migrations instead of writing files
+  cat events.ndjson | clickforge kafka - -n events                Read NDJSON from stdin";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge kafka video_events.json                              Generate the pipeline, writing migration files\n  clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/\n                                                                   Override table/cluster/kafka names and output dir\n  clickforge kafka video_events.json --stdout                     Print migrations instead of writing files\n  cat events.ndjson | clickforge kafka - -n events                Read NDJSON from stdin"
+    after_help = KAFKA_AFTER_HELP
 )]
 pub struct KafkaArgs {
     /// Path to a JSON array or NDJSON file (or `-` for stdin)
@@ -122,9 +172,15 @@ pub struct KafkaArgs {
     pub stdout: bool,
 }
 
+const DIFF_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge diff video_events.json video_events_v2.json -n video_events  Generate an additive ALTER TABLE migration
+  clickforge diff old.json new.json -c my_cluster                        Add ON CLUSTER to the ALTER statements
+  clickforge diff old.json new.json --stdout                             Print migrations instead of writing files";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge diff video_events.json video_events_v2.json -n video_events  Generate an additive ALTER TABLE migration\n  clickforge diff old.json new.json -c my_cluster                        Add ON CLUSTER to the ALTER statements\n  clickforge diff old.json new.json --stdout                             Print migrations instead of writing files"
+    after_help = DIFF_AFTER_HELP
 )]
 pub struct DiffArgs {
     /// Path to the existing/old JSON sample (or `-` for stdin)
@@ -145,9 +201,16 @@ pub struct DiffArgs {
     pub stdout: bool,
 }
 
+const SCAN_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge scan video_events.json               Inspect fields and suggest engines
+  clickforge scan video_events.json -c my_cluster  Include ReplicatedMergeTree in the suggestions
+
+In a terminal, scan ends by offering to generate a migration from a suggested engine.";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge scan video_events.json               Inspect fields and suggest engines\n  clickforge scan video_events.json -c my_cluster  Include ReplicatedMergeTree in the suggestions\n\nIn a terminal, scan ends by offering to generate a migration from a suggested engine."
+    after_help = SCAN_AFTER_HELP
 )]
 pub struct ScanArgs {
     /// Path to a JSON array or NDJSON file (or `-` for stdin)
@@ -160,9 +223,17 @@ pub struct ScanArgs {
     pub cluster: Option<String>,
 }
 
+const TABLE_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge table video_events.json                                        Generate a CREATE TABLE migration, engine inferred
+  clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster
+                                                                             Force an engine, required for ReplicatedMergeTree
+  clickforge table video_events.json --order-by 'id,created_at'             Override the inferred ORDER BY
+  clickforge table video_events.json --stdout                              Print migrations instead of writing files";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge table video_events.json                                        Generate a CREATE TABLE migration, engine inferred\n  clickforge table video_events.json --engine ReplicatedMergeTree -c my_cluster\n                                                                             Force an engine, required for ReplicatedMergeTree\n  clickforge table video_events.json --order-by 'id,created_at'             Override the inferred ORDER BY\n  clickforge table video_events.json --stdout                              Print migrations instead of writing files"
+    after_help = TABLE_AFTER_HELP
 )]
 pub struct TableArgs {
     /// Path to a JSON array or NDJSON file (or `-` for stdin)
@@ -188,9 +259,23 @@ pub struct TableArgs {
     pub stdout: bool,
 }
 
+const CONTRACT_APPLY_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickforge contract apply video_events.contract.json new_events.json                 Apply compatible changes
+  clickforge contract apply video_events.contract.json new_events.json --accept amount Also apply the attention change to `amount`
+  clickforge contract apply video_events.contract.json new_events.json --accept-all    Apply every attention change
+
+Writes {name}_v{N}_up.sql/_down.sql and rewrites the contract as version N. Breaking changes are never applied.
+
+EXIT CODES:
+  0  applied, or nothing to apply
+  1  error
+  2  attention changes left out (not accepted)
+  3  breaking changes; nothing written";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  clickforge contract apply video_events.contract.json new_events.json                 Apply compatible changes\n  clickforge contract apply video_events.contract.json new_events.json --accept amount Also apply the attention change to `amount`\n  clickforge contract apply video_events.contract.json new_events.json --accept-all    Apply every attention change\n\nWrites {name}_v{N}_up.sql/_down.sql and rewrites the contract as version N. Breaking changes are never applied.\n\nEXIT CODES:\n  0  applied, or nothing to apply\n  1  error\n  2  attention changes left out (not accepted)\n  3  breaking changes; nothing written"
+    after_help = CONTRACT_APPLY_AFTER_HELP
 )]
 pub struct ContractApplyArgs {
     /// Path to the schema contract (rewritten in place)
@@ -208,9 +293,18 @@ pub struct ContractApplyArgs {
     pub output_dir: Option<PathBuf>,
 }
 
+const CONTRACT_DIFF_AFTER_HELP: &str = "\
+EXAMPLES:
+  git show HEAD:video_events.contract.json > /tmp/old.json   The deployed version
+  $EDITOR video_events.contract.json                          Edit it, and bump `version`
+  clickforge contract diff /tmp/old.json video_events.contract.json
+
+Writes {name}_v{N}_up.sql/_down.sql; never touches the contracts. Every edit is applied: this is how breaking changes are made.
+Delete a field by marking it \"retired\": true; its column is kept.";
+
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "EXAMPLES:\n  git show HEAD:video_events.contract.json > /tmp/old.json   The deployed version\n  $EDITOR video_events.contract.json                          Edit it, and bump `version`\n  clickforge contract diff /tmp/old.json video_events.contract.json\n\nWrites {name}_v{N}_up.sql/_down.sql; never touches the contracts. Every edit is applied: this is how breaking changes are made.\nDelete a field by marking it \"retired\": true; its column is kept."
+    after_help = CONTRACT_DIFF_AFTER_HELP
 )]
 pub struct ContractDiffArgs {
     /// Path to the deployed contract

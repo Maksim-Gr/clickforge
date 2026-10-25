@@ -422,12 +422,8 @@ fn contract_check(dir: &std::path::Path, sample: &str) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to run clickforge");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(sample.as_bytes())
-        .unwrap();
+    // An invalid contract exits before stdin is read, so the write may hit a broken pipe.
+    let _ = child.stdin.take().unwrap().write_all(sample.as_bytes());
     child.wait_with_output().unwrap()
 }
 
