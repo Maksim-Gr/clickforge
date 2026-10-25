@@ -245,9 +245,10 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
                             found.push((
                                 ChangeClass::Attention,
                                 format!(
-                                    "{} -> {} (widening; values are truncated until then)",
+                                    "{} -> {} (widening); {} truncates these values",
                                     expected.as_str(),
-                                    widened.as_str()
+                                    widened.as_str(),
+                                    expected.as_str()
                                 ),
                             ));
                             proposed.ty = (&widened).into();
@@ -266,10 +267,7 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
                     proposed.nullable = true;
                     found.push((
                         ChangeClass::Attention,
-                        format!(
-                            "required field missing or null in some records; becomes {}",
-                            expected.as_ch_str(true)
-                        ),
+                        "required field missing or null in some records".to_string(),
                     ));
                 }
             }
@@ -307,9 +305,8 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
             UnknownFields::Propose => (
                 ChangeClass::Attention,
                 format!(
-                    "new field {}, present in every record; added as {} unless accepted",
-                    col.ch_type.as_ch_str(false),
-                    col.ch_type.as_ch_str(true)
+                    "new field {}, present in every record",
+                    col.ch_type.as_ch_str(false)
                 ),
             ),
             UnknownFields::Ignore => (ChangeClass::Info, "unknown field, ignored".to_string()),
@@ -347,6 +344,8 @@ pub struct NextVersion {
     pub contract: Option<Contract>,
     /// Fields whose attention change was left out because it wasn't accepted.
     pub skipped: Vec<String>,
+    /// New fields present in every record that were added as nullable, not accepted.
+    pub added_nullable: Vec<String>,
 }
 
 /// The next version of `contract`, with `changes` (from `check`) applied: every
@@ -380,6 +379,7 @@ pub fn next_version(
     let mut next = contract.clone();
     let mut applied = false;
     let mut skipped = Vec::new();
+    let mut added_nullable = Vec::new();
     for change in changes {
         let Some(proposed) = &change.proposed else {
             continue;
@@ -393,6 +393,7 @@ pub fn next_version(
             }
             // A new field is always safe to add as nullable; accepting it makes it required.
             proposed.nullable = true;
+            added_nullable.push(change.field.clone());
         }
         match existing {
             Some(field) => *field = proposed,
@@ -405,6 +406,7 @@ pub fn next_version(
     Ok(NextVersion {
         contract: applied.then_some(next),
         skipped,
+        added_nullable,
     })
 }
 
@@ -694,6 +696,7 @@ mod tests {
         let c = contract(r#"[{"a":1}]"#, &[]);
         let n = next(&c, r#"[{"a":1,"b":"x"}]"#, Accept::Fields(&[])).unwrap();
         assert!(n.skipped.is_empty());
+        assert_eq!(n.added_nullable, vec!["b".to_string()]);
         assert!(field(&n.contract.unwrap(), "b").nullable);
     }
 
@@ -705,9 +708,9 @@ mod tests {
             r#"[{"a":1,"b":"x"}]"#,
             Accept::Fields(&["b".to_string()]),
         )
-        .unwrap()
-        .contract
         .unwrap();
+        assert!(n.added_nullable.is_empty());
+        let n = n.contract.unwrap();
         assert!(!field(&n, "b").nullable);
     }
 
@@ -1038,6 +1041,29 @@ mod tests {
     fn nullable_field_always_present_is_no_change() {
         let c = contract("{\"a\":1}\n{}", &[]);
         assert!(changes(&c, r#"[{"a":1},{"a":2}]"#).is_empty());
+    }
+
+    #[test]
+    fn messages_describe_the_sample_not_an_action() {
+        // `diff` reports these too, and it can neither accept nor modify.
+        let c = contract(r#"[{"a":1,"r":1}]"#, &[]);
+        let sample = infer_schema(
+            "{\"a\":1.5,\"r\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}",
+            "t",
+        )
+        .unwrap();
+        let changes = check(&c, &sample);
+        assert_eq!(changes.len(), 3, "{changes:?}");
+        for change in changes {
+            for phrase in ["accept", "until", "becomes", "added as"] {
+                assert!(
+                    !change.message.contains(phrase),
+                    "{}: {}",
+                    change.field,
+                    change.message
+                );
+            }
+        }
     }
 
     #[test]
