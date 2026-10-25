@@ -827,3 +827,15 @@ fn contract_check_reports_retired_field_as_info() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("retired field"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn contract_apply_reports_new_field_added_as_nullable() {
+    let dir = temp_dir("contract_apply_added_nullable");
+    contract_init(&dir, "kafka");
+    let sample = SAMPLE_V1.replace("\"amount\": ", "\"os\": \"ios\", \"amount\": ");
+    let output = contract_apply(&dir, &sample, &[]);
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Added as Nullable: os"), "{stderr}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

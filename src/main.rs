@@ -339,6 +339,16 @@ fn contract_apply(args: cli::ContractApplyArgs) {
     let next = contract::next_version(&contract, &changes, accept).unwrap_or_else(|e| die(e));
     let skipped_code = if next.skipped.is_empty() { 0 } else { 2 };
     let print_skipped = || {
+        if !next.added_nullable.is_empty() {
+            let note = "Added as Nullable:"
+                .if_supports_color(Stderr, |t| t.style(Style::new().cyan().bold()))
+                .to_string();
+            eprintln!(
+                "{} {}; to make one required, edit the contract and run `contract diff`",
+                note,
+                next.added_nullable.join(", ")
+            );
+        }
         if !next.skipped.is_empty() {
             let skipped = "Skipped:"
                 .if_supports_color(Stderr, |t| t.style(Style::new().yellow().bold()))
