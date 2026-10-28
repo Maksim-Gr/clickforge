@@ -8,7 +8,7 @@ mod sample;
 mod scanner;
 mod schema;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use owo_colors::{OwoColorize, Stream::Stderr, Stream::Stdout, Style};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -132,9 +132,15 @@ fn write_migrations(migration: schema::Migration, output_dir: &Path) {
 fn main() {
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        // Keep the subcommand path (e.g. `contract init`) so nested help still resolves.
         let mut help_args = vec![raw_args[0].clone()];
-        if let Some(sub) = raw_args.iter().skip(1).find(|a| !a.starts_with('-')) {
-            help_args.push(sub.clone());
+        let mut cmd = cli::Cli::command();
+        for arg in raw_args.iter().skip(1).filter(|a| !a.starts_with('-')) {
+            let Some(sub) = cmd.find_subcommand(arg).cloned() else {
+                break;
+            };
+            help_args.push(arg.clone());
+            cmd = sub;
         }
         help_args.push("--help".to_string());
         cli::Cli::parse_from(help_args);

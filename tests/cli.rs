@@ -274,6 +274,30 @@ fn subcommand_help_flag_prints_subcommand_usage() {
 }
 
 #[test]
+fn nested_subcommand_help_flag_prints_nested_usage() {
+    let output = clickforge()
+        .args(["contract", "init", "--help"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run clickforge");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--target"));
+}
+
+#[test]
+fn help_flag_after_value_taking_flag_prints_help() {
+    let output = clickforge()
+        .args(["kafka", "-n", "--help"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run clickforge");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--kafka"));
+}
+
+#[test]
 fn diff_with_no_changes_reports_no_changes_detected() {
     let output = clickforge()
         .args([
