@@ -22,45 +22,17 @@ datalake.{name}    # typed, queryable table — fields JSONExtracted at write ti
 
 ## Install
 
-Download the prebuilt binary for your platform from the [latest release](https://github.com/Maksim-Gr/clickforge/releases/latest). The `latest/download` URLs below always resolve to the newest release, so they never go stale.
+Download the prebuilt binary from the [latest release](https://github.com/Maksim-Gr/clickforge/releases/latest), replacing `macos-arm64` with `macos-x86_64` or `linux-x86_64` as needed:
 
-**macOS (Apple Silicon)**
 ```bash
 curl -L https://github.com/Maksim-Gr/clickforge/releases/latest/download/clickforge-macos-arm64.tar.gz | tar -xz
 chmod +x clickforge && sudo mv clickforge /usr/local/bin/clickforge
-```
-
-**macOS (Intel)**
-```bash
-curl -L https://github.com/Maksim-Gr/clickforge/releases/latest/download/clickforge-macos-x86_64.tar.gz | tar -xz
-chmod +x clickforge && sudo mv clickforge /usr/local/bin/clickforge
-```
-
-**Linux (x86_64)**
-```bash
-curl -L https://github.com/Maksim-Gr/clickforge/releases/latest/download/clickforge-linux-x86_64.tar.gz | tar -xz
-chmod +x clickforge && sudo mv clickforge /usr/local/bin/clickforge
-```
-
-To install a specific version, replace `latest/download` with `download/<tag>`, e.g. `download/v0.5.0`.
-
-> **macOS:** the binary is unsigned, so Gatekeeper may block the first run. If you see *"cannot be opened because the developer cannot be verified"*, clear the quarantine flag:
-> ```bash
-> xattr -d com.apple.quarantine /usr/local/bin/clickforge
-> ```
-
-Verify:
-```bash
 clickforge --version
 ```
 
-## Build from source
-
-```bash
-cargo build --release
-```
-
-The binary is at `./target/release/clickforge`.
+- **Specific version:** replace `latest/download` with `download/<tag>`, e.g. `download/v0.5.0`.
+- **macOS Gatekeeper:** the binary is unsigned; if it's blocked, run `xattr -d com.apple.quarantine /usr/local/bin/clickforge`.
+- **From source:** `cargo build --release` puts the binary at `./target/release/clickforge`.
 
 ## Quickstart
 
@@ -76,244 +48,31 @@ This writes `video_events_up.sql` (the `streams` Kafka table, the `raw` replay b
 clickforge kafka video_events.json -c clickhouse_datalake -k kafka -o migrations/
 ```
 
-To keep evolving the pipeline as your messages change, start it from a [schema contract](#contract) instead — the same SQL, plus a contract that new samples are checked and migrated against:
+To keep evolving the pipeline as your messages change, start it from a [schema contract](docs/contract.md) instead — the same SQL, plus a contract that new samples are checked and migrated against:
 
 ```bash
 clickforge contract init video_events.json --target kafka
 clickforge contract apply video_events.contract.json new_events.json
 ```
 
-## Usage
-
-```bash
-clickforge <COMMAND> [OPTIONS] <INPUT>
-```
-
-The `kafka`, `scan`, and `table` commands take a single `<INPUT>`; `diff` and `contract` take their own positionals (see their sections).
-
-`<INPUT>` is a path to a JSON/NDJSON file, or `-` to read from stdin. When reading from stdin, pass `--name` to set the table name (it defaults to `table`):
-
-```bash
-cat video_events.json | clickforge scan -
-cat video_events.json | clickforge table - --name video_events -o migrations/
-```
-
-### Commands
+## Commands
 
 `kafka` is the primary command — it generates the whole ingestion pipeline. The rest are helpers around it:
 
 | Command   | Role | Description |
 |-----------|------|-------------|
-| `kafka`   | **primary** | Generate the full Kafka→ClickHouse pipeline (streams, raw, datalake + materialized views) |
-| `scan`    | helper | Inspect JSON fields and pick a ClickHouse engine for a one-off table |
-| `table`   | helper | Generate a single `CREATE TABLE` migration from JSON |
-| `diff`    | helper | Generate `ALTER TABLE` migrations adding the columns new in a JSON sample |
-| `contract` | helper | Keep a reviewed schema contract, check new samples against it, and migrate it version by version |
+| [`kafka`](docs/commands.md#kafka)   | **primary** | Generate the full Kafka→ClickHouse pipeline (streams, raw, datalake + materialized views) |
+| [`scan`](docs/commands.md#scan)    | helper | Inspect JSON fields and pick a ClickHouse engine for a one-off table |
+| [`table`](docs/commands.md#table)   | helper | Generate a single `CREATE TABLE` migration from JSON |
+| [`diff`](docs/commands.md#diff)    | helper | Generate `ALTER TABLE` migrations adding the columns new in a JSON sample |
+| [`contract`](docs/contract.md) | helper | Keep a reviewed schema contract, check new samples against it, and migrate it version by version |
 
----
+`<INPUT>` is a JSON/NDJSON file, or `-` to read from stdin ([details](docs/commands.md#input)).
 
-### `kafka`
+## Documentation
 
-```bash
-clickforge kafka [OPTIONS] <INPUT>
-```
+- [Commands](docs/commands.md) — input handling, `kafka`, `scan`, `table`, `diff`
+- [Schema contracts](docs/contract.md) — change classes, exit codes, versioned migrations
+- [Type inference](docs/type-inference.md) — how JSON values map to ClickHouse types
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-n, --name <NAME>` | input filename stem | Override the table name |
-| `-c, --cluster <CLUSTER>` | `clickhouse_datalake` | ClickHouse cluster name |
-| `-k, --kafka <KAFKA>` | `kafka` | Kafka collection name |
-| `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
-| `--stdout` | off | Print migrations to stdout instead of writing files |
-
-```bash
-clickforge kafka video_events.json
-clickforge kafka video_events.json -n my_table -c my_cluster -k my_kafka -o migrations/
-```
-
-Writes `{name}_up.sql` (creates streams table, raw table, datalake table, raw_mv, streams_mv) and `{name}_down.sql` (drops all 5 in reverse order).
-
----
-
-## Helper commands
-
-`scan`, `table`, and `diff` support the pipeline above — choose an engine, generate a one-off table, or evolve the `datalake` schema as your messages change. You don't need them for the basic `kafka` flow.
-
-### `scan`
-
-Analyzes JSON fields, classifies them (Timestamp-like, ID-like, Numeric), and prints engine suggestions with `ORDER BY` recommendations. When numeric metrics and a dimension (id/timestamp) are present, it also suggests `SummingMergeTree` with the metric columns to sum.
-
-![clickforge scan demo — inspect fields and generate a one-off table](assets/demo.gif)
-
-```bash
-clickforge scan [OPTIONS] <INPUT>
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-n, --name <NAME>` | input filename stem | Names the generated `{name}_up.sql`/`{name}_down.sql` files if you pick an engine at the prompt; otherwise no effect on output |
-| `-c, --cluster <CLUSTER>` | — | If set, suggests `ReplicatedMergeTree` instead of `MergeTree` |
-
-```bash
-clickforge scan video_events.json
-clickforge scan video_events.json -c my_cluster
-```
-
-When run in a terminal, `scan` finishes by offering to generate a migration from one of
-its suggestions, so you don't have to re-type a `table` command:
-
-```
-Pick an engine to generate [1-3, Enter to skip]: 2
-Written: ./video_events_up.sql
-Written: ./video_events_down.sql
-```
-
-Picking a number writes `{name}_up.sql`/`{name}_down.sql` (using that suggestion's engine
-and `ORDER BY`) to the current directory; press Enter to skip. The prompt only appears in
-an interactive terminal — piped or scripted runs just print the suggestions as before.
-
-Example output (truncated):
-```
-Field analysis: video_events.json  (4 records, 13 fields)
-
-  event_id              String            required → ID-like
-  playback_position_ms  Int64             required → Numeric
-  timestamp             DateTime64(3)     required → Timestamp-like
-  client_ip             Nullable(String)  nullable
-
-Suggested engines:
-
-  1. MergeTree
-     ORDER BY (timestamp)
-     → general purpose time-series table
-
-  2. ReplacingMergeTree
-     ORDER BY (event_id, timestamp)
-     → deduplicates rows by `event_id` — good for upsert-like data
-
-To generate a migration with the chosen engine, run:
-  clickforge table video_events.json --engine MergeTree --order-by timestamp
-  clickforge table video_events.json --engine ReplacingMergeTree --order-by event_id,timestamp
-```
-
-
----
-
-### `table`
-
-Generates a single `CREATE TABLE` / `DROP TABLE` migration. Use `scan` first to pick the right engine.
-
-```bash
-clickforge table [OPTIONS] <INPUT>
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-n, --name <NAME>` | input filename stem | Override the table name |
-| `-e, --engine <ENGINE>` | inferred (MergeTree, or ReplicatedMergeTree with `-c`) | `MergeTree`, `ReplicatedMergeTree`, `ReplacingMergeTree`, `SummingMergeTree` |
-| `--order-by <FIELDS>` | inferred from field names | Comma-separated `ORDER BY` fields |
-| `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` clause; required for `ReplicatedMergeTree`, and makes it the default engine |
-| `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
-| `--stdout` | off | Print migrations to stdout instead of writing files |
-
-```bash
-clickforge table video_events.json
-clickforge table video_events.json -c my_cluster                  # ReplicatedMergeTree ON CLUSTER
-clickforge table video_events.json --order-by event_id,timestamp  # override the inferred ORDER BY
-```
-
-
----
-
-### `diff`
-
-Infers a schema from two JSON samples (an old and a new one) and generates additive `ALTER TABLE` migrations for the columns that appear in the new sample but not the old.
-
-```bash
-clickforge diff [OPTIONS] <OLD> <NEW>
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `<OLD>` | — | Existing/old JSON sample (or `-` for stdin) |
-| `<NEW>` | — | New JSON sample (or `-` for stdin) |
-| `-n, --name <NAME>` | new file stem (old file stem if `<NEW>` is `-`) | Override the table name |
-| `-c, --cluster <CLUSTER>` | — | Adds `ON CLUSTER` to the statements |
-| `-o, --output-dir <DIR>` | `.` | Output directory for generated SQL files |
-| `--stdout` | off | Print migrations to stdout instead of writing files |
-
-```bash
-clickforge diff video_events.json video_events_v2.json -n video_events
-```
-
-Writes `{name}_alter_up.sql`/`_down.sql` that add the columns new in `<NEW>`, always as `Nullable`. Every other difference is reported and classified as by [`contract check`](#contract), with the same exit codes, but not migrated — retyping or dropping a populated column is destructive.
-
-> **Kafka pipelines:** `diff` alters a single, unqualified table, not the `raw` → `datalake` view, so new columns would stay empty. Use [`contract apply`](#contract), which swaps the view too.
-
----
-
-### `contract`
-
-A **schema contract** (`{name}.contract.json`) is the committed, reviewed record of the schema a table or Kafka pipeline expects. New samples are checked against it, and each change becomes a versioned migration.
-
-```bash
-clickforge contract init  <SAMPLE> --target kafka|table   # contract + {name}_v1_up/down.sql
-clickforge contract check <CONTRACT> <SAMPLE>             # report only
-clickforge contract apply <CONTRACT> <SAMPLE> [--accept <FIELDS> | --accept-all]
-clickforge contract diff  <OLD> <NEW>                     # migrate a hand-edited contract
-```
-
-`init` takes `-n`, `-c`, `-k`, `-o` for `--target kafka`, and `-n`, `-e`, `--order-by`, `-c`, `-o` for `--target table`. Every difference between the contract and a sample is classified:
-
-| Class | Examples | `apply` |
-|---|---|---|
-| compatible | new field, missing or `null` in some records | applied |
-| attention | new field in every record · floats in an `Int64` field (widens to `Float64`) · required field sometimes `null` | only with `--accept`; a new field is still added, as `Nullable` |
-| breaking | required field absent · values that don't fit the type (`"abc"` for `Int64`, which `JSONExtract` would silently store as `0`) · any change to an `ORDER BY` field | never; nothing is written |
-
-A nullable field absent from a sample is not a change: samples are incomplete. The contract's `"unknown_fields"` decides what new fields are: `propose` (default), `ignore` or `reject`. Exit codes: `0` none or compatible, `2` attention, `3` breaking, `1` error.
-
-`apply` writes `{name}_v{N}_up/down.sql` next to the contract and bumps its `version`. Columns are only added or modified, never dropped, and existing rows aren't backfilled. For `kafka`, the `raw` → `datalake` view is swapped with `streams` detached, so Kafka holds the messages meanwhile:
-
-```sql
-ALTER TABLE `datalake`.`video_events` … ADD COLUMN IF NOT EXISTS `device` Nullable(String) AFTER `platform`;
-DETACH TABLE `streams`.`video_events` …;
-DROP VIEW IF EXISTS `raw`.`video_events_mv` … SYNC;
-CREATE MATERIALIZED VIEW IF NOT EXISTS `raw`.`video_events_mv` …;   -- now extracts `device`
-ATTACH TABLE `streams`.`video_events` …;
-```
-
-Down scripts restore the old view first, with a `-- WARNING` wherever reverting truncates values or turns `NULL`s into defaults.
-
-**Changing the contract by hand** is how breaking changes are made, since `apply` never makes them: edit it, bump `version`, and `diff` it against the deployed version. To remove a field, mark it `"retired": true` rather than deleting it — it stops being extracted and its column is kept. Narrowing type changes carry a `-- WARNING` (the mutation fails if a value doesn't convert). The engine, `ORDER BY`, cluster and target can't be migrated.
-
-```bash
-git show HEAD:video_events.contract.json > /tmp/old.json
-$EDITOR video_events.contract.json        # e.g. "retired": true on a field, "version": 2
-clickforge contract diff /tmp/old.json video_events.contract.json
-```
-
----
-
-## Type Inference
-
-Types are inferred by scanning every record and widening as needed:
-
-| JSON value | ClickHouse type |
-|------------|-----------------|
-| string | `Nullable(String)` |
-| ISO-8601 datetime string (`YYYY-MM-DDThh:mm:ss…`) | `Nullable(DateTime64(3))` |
-| integer | `Nullable(Int64)` (or `Nullable(UInt64)` for values beyond `Int64`'s range) |
-| float | `Nullable(Float64)` |
-| boolean | `Nullable(Bool)` |
-| array | `Array(T)` — element type inferred |
-| object with scalar values | `Map(String, V)` |
-| null / nested object | `Nullable(String)` |
-
-`Array` and `Map` columns are never wrapped in `Nullable` (ClickHouse forbids it). Date-only strings (`2024-03-01`) are left as `String`.
-
-String columns with few distinct values across a large-enough sample are emitted as `LowCardinality(String)` (a ClickHouse storage optimization). This is conservative: it stays off for small samples and high-distinct columns.
-
-If the same field appears as `Int64` in one record and `Float64` (or `UInt64`) in another, it widens to `Float64`. Any other type conflict widens to `String`.
-
-A field is non-nullable only if it is present in every record and is never JSON `null`. Field order in the output matches the first record that introduced each field.
+Every command lists its flags and defaults with `clickforge <COMMAND> --help`.
