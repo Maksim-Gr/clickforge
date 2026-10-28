@@ -132,14 +132,14 @@ fn infer_type(val: &Value) -> ColumnType {
                 .map(infer_type)
                 .reduce(|a, b| merge_types(&a, &b))
                 // No elements observed; String is an arbitrary but harmless default
-                // (documented limitation — see README's Type Inference section).
+                // (documented limitation — see docs/type-inference.md).
                 .unwrap_or(ColumnType::String);
             ColumnType::Array(Box::new(elem))
         }
         Value::Object(map) => {
             // Map(String, V) only when every value is a homogeneous scalar; nested
             // objects and empty objects fall back to String, discarding structure.
-            // This is a deliberate, documented simplification (see README), not an
+            // This is a deliberate, documented simplification (see docs/type-inference.md), not an
             // oversight.
             let mut value_type: Option<ColumnType> = None;
             for v in map.values() {
@@ -214,8 +214,8 @@ pub fn merge_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
             ColumnType::Map(Box::new(ColumnType::String), Box::new(merge_types(x, y)))
         }
         // Any other conflict (e.g. Bool vs String, or mixed-type array elements)
-        // widens to String — lossy but documented (see README's Type Inference
-        // section) rather than silently picking one side.
+        // widens to String — lossy but documented (see docs/type-inference.md)
+        // rather than silently picking one side.
         _ => ColumnType::String,
     }
 }
