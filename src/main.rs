@@ -151,6 +151,9 @@ fn main() {
     match cli.command {
         cli::Commands::Kafka(args) => {
             let sample = load_sample(&args.input, args.name);
+            for column in &sample.schema.columns {
+                schema::validate_kafka_field(&column.name).unwrap_or_else(|e| die(e));
+            }
             print_schema_summary(&sample.schema);
             emit_migrations(
                 generator::kafka_pipeline(&sample.schema, args.cluster, args.kafka),
@@ -243,6 +246,9 @@ fn contract_init(args: cli::ContractInitArgs) {
 
     let (contract, migration) = match args.target {
         cli::ContractTarget::Kafka => {
+            for column in &schema.columns {
+                schema::validate_kafka_field(&column.name).unwrap_or_else(|e| die(e));
+            }
             if args.engine.is_some() || args.order_by.is_some() {
                 die("--engine and --order-by only apply to --target table");
             }
