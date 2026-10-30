@@ -186,6 +186,11 @@ impl Contract {
         {
             return Err("a kafka contract needs both `cluster` and `kafka`".to_string());
         }
+        if contract.target == Target::Kafka {
+            for field in &contract.fields {
+                crate::schema::validate_kafka_field(&field.name)?;
+            }
+        }
         Ok(contract)
     }
 }
@@ -297,31 +302,36 @@ pub fn check(contract: &Contract, sample: &InferredSchema) -> Vec<Change> {
         if contract.fields.iter().any(|f| f.name == col.name) {
             continue;
         }
-        let (class, message) = match contract.unknown_fields {
-            UnknownFields::Propose if col.nullable => (
+        let reserved_error = (contract.target == Target::Kafka)
+            .then(|| crate::schema::validate_kafka_field(&col.name).err())
+            .flatten();
+        let (class, message) = match (contract.unknown_fields, reserved_error) {
+            (UnknownFields::Propose, Some(error)) => (ChangeClass::Breaking, error),
+            (UnknownFields::Propose, _) if col.nullable => (
                 ChangeClass::Compatible,
                 format!("new field {}", col.ch_type.as_ch_str(true)),
             ),
-            UnknownFields::Propose => (
+            (UnknownFields::Propose, _) => (
                 ChangeClass::Attention,
                 format!(
                     "new field {}, present in every record",
                     col.ch_type.as_ch_str(false)
                 ),
             ),
-            UnknownFields::Ignore => (ChangeClass::Info, "unknown field, ignored".to_string()),
-            UnknownFields::Reject => (
+            (UnknownFields::Ignore, _) => (ChangeClass::Info, "unknown field, ignored".to_string()),
+            (UnknownFields::Reject, _) => (
                 ChangeClass::Breaking,
                 "unknown field (unknown_fields: reject)".to_string(),
             ),
         };
-        let proposed = (contract.unknown_fields == UnknownFields::Propose).then(|| Field {
-            name: col.name.clone(),
-            ty: (&col.ch_type).into(),
-            nullable: col.nullable,
-            low_cardinality: col.low_cardinality,
-            retired: false,
-        });
+        let proposed =
+            matches!(class, ChangeClass::Compatible | ChangeClass::Attention).then(|| Field {
+                name: col.name.clone(),
+                ty: (&col.ch_type).into(),
+                nullable: col.nullable,
+                low_cardinality: col.low_cardinality,
+                retired: false,
+            });
         changes.push(Change {
             class,
             field: col.name.clone(),

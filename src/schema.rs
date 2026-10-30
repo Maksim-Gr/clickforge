@@ -129,6 +129,16 @@ pub struct EngineConfig {
     pub sum_columns: Vec<String>,
 }
 
+/// Kafka metadata is stored alongside extracted JSON fields in datalake tables.
+/// Reject collisions rather than generating duplicate columns or aliases.
+pub fn validate_kafka_field(name: &str) -> Result<(), String> {
+    if matches!(name, "_timestamp_ms" | "_topic" | "_row_created") {
+        Err(format!("field `{name}` is reserved for Kafka metadata"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Quotes a ClickHouse identifier (column or table name), escaping embedded
 /// backticks by doubling them so names derived from arbitrary JSON keys can't
 /// break out of the identifier or (worse) inject SQL.

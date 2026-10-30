@@ -859,3 +859,66 @@ fn contract_apply_reports_new_field_added_as_nullable() {
     assert!(stderr.contains("Added as Nullable: os"), "{stderr}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn kafka_rejects_metadata_fields_before_writing() {
+    for field in ["_topic", "_timestamp_ms", "_row_created"] {
+        let dir = temp_dir(&format!("reserved{field}"));
+        let sample = dir.join("events.json");
+        std::fs::write(&sample, format!(r#"[{{"{field}":"x"}}]"#)).unwrap();
+        for command in [vec!["kafka"], vec!["contract", "init", "--target", "kafka"]] {
+            let output = clickforge()
+                .args(command)
+                .arg(&sample)
+                .arg("-o")
+                .arg(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{:?}", output);
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("reserved for Kafka metadata")
+            );
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        }
+        let output = clickforge()
+            .args(["table", sample.to_str().unwrap(), "--stdout"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn kafka_contract_apply_rejects_new_metadata_field() {
+    let dir = temp_dir("apply_reserved_metadata");
+    assert!(contract_init(&dir, "kafka").status.success());
+    let before = read_contract(&dir);
+    let mut sample: serde_json::Value = serde_json::from_str(SAMPLE_V1).unwrap();
+    for record in sample.as_array_mut().unwrap() {
+        record["_topic"] = "x".into();
+    }
+    let output = contract_apply(&dir, &sample.to_string(), &["--accept-all"]);
+    assert_eq!(output.status.code(), Some(3), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reserved for Kafka metadata"));
+    assert_eq!(read_contract(&dir), before);
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn kafka_contract_diff_rejects_hand_edited_metadata_field() {
+    let dir = temp_dir("diff_reserved_metadata");
+    assert!(contract_init(&dir, "kafka").status.success());
+    edit_contract(&dir, |contract| {
+        contract["version"] = 2.into();
+        let mut field = contract["fields"][0].clone();
+        field["name"] = "_topic".into();
+        contract["fields"].as_array_mut().unwrap().push(field);
+    });
+    let output = contract_diff(&dir);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reserved for Kafka metadata"));
+    assert!(!dir.join("sample_v2_up.sql").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
