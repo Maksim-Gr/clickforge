@@ -86,13 +86,13 @@ pub fn scan(schema: &InferredSchema, replicated: bool) -> ScanResult {
 
     let timestamp_fields: Vec<&str> = fields
         .iter()
-        .filter(|f| f.timestamp)
+        .filter(|f| f.timestamp && !f.nullable)
         .map(|f| f.name.as_str())
         .collect();
 
     let id_fields: Vec<&str> = fields
         .iter()
-        .filter(|f| f.id)
+        .filter(|f| f.id && !f.nullable)
         .map(|f| f.name.as_str())
         .collect();
 
@@ -196,6 +196,17 @@ pub fn select_engine(
             .map(|s| s.order_by.clone())
             .unwrap_or_default()
     });
+    for name in &order_by {
+        if schema.columns.iter().any(|c| {
+            &c.name == name
+                && c.nullable
+                && !matches!(c.ch_type, ColumnType::Array(_) | ColumnType::Map(_, _))
+        }) {
+            return Err(format!(
+                "ORDER BY field `{name}` is nullable; choose a non-nullable field"
+            ));
+        }
+    }
     let sum_columns = suggestions
         .iter()
         .find(|s| s.engine == TableEngine::SummingMergeTree)
@@ -302,6 +313,38 @@ pub fn print_scan(result: &ScanResult, source: &str, record_count: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inferred_keys_skip_nullable_dimensions() {
+        let schema = crate::inference::infer_schema(
+            r#"[{"id":1,"timestamp":"2024-03-01T12:00:00Z","count":1},{"id":null,"timestamp":null,"count":2}]"#,
+            "events",
+        ).unwrap();
+        let result = scan(&schema, false);
+        assert!(result.suggestions.iter().all(|s| s.order_by.is_empty()));
+        assert_eq!(result.suggestions.len(), 1);
+    }
+
+    #[test]
+    fn inferred_keys_use_next_required_dimension() {
+        let schema = crate::inference::infer_schema(
+            r#"[{"timestamp":null,"event_time":"2024-03-01T12:00:00Z"}]"#,
+            "events",
+        )
+        .unwrap();
+        assert_eq!(
+            scan(&schema, false).suggestions[0].order_by,
+            vec!["event_time"]
+        );
+    }
+
+    #[test]
+    fn explicit_nullable_sorting_key_is_rejected() {
+        let schema = crate::inference::infer_schema(r#"[{"id":null}]"#, "events").unwrap();
+        let result = select_engine(&schema, None, Some(vec!["id".into()]), None);
+        assert!(matches!(result, Err(e) if e.contains("id") && e.contains("nullable")));
+    }
+
     use crate::inference::infer_schema;
 
     #[test]
