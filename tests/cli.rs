@@ -922,3 +922,24 @@ fn kafka_contract_diff_rejects_hand_edited_metadata_field() {
     assert!(!dir.join("sample_v2_up.sql").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn nullable_timestamp_generates_table_without_nullable_key() {
+    let dir = temp_dir("nullable_timestamp_key");
+    let sample = dir.join("events.json");
+    std::fs::write(
+        &sample,
+        r#"[{"timestamp":"2024-03-01T12:00:00Z"},{"timestamp":null}]"#,
+    )
+    .unwrap();
+    let output = clickforge()
+        .args(["table", sample.to_str().unwrap(), "--stdout"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let sql = String::from_utf8_lossy(&output.stdout);
+    assert!(sql.contains("`timestamp` Nullable(DateTime64(3))"));
+    assert!(sql.contains("ORDER BY tuple()"));
+    assert!(!sql.contains("PARTITION BY"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
