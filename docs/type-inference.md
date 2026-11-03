@@ -15,6 +15,8 @@ Types are inferred by scanning every record and widening as needed:
 
 `Array` and `Map` columns are never wrapped in `Nullable` (ClickHouse forbids it). Date-only strings (`2024-03-01`) are left as `String`.
 
+Kafka materialized views explicitly parse inferred datetime strings at millisecond precision, including inside arrays and maps. Missing, null, or invalid nullable datetimes become `NULL`; invalid required datetimes fail ingestion rather than silently becoming the epoch.
+
 String columns with few distinct values across a large-enough sample are emitted as `LowCardinality(String)` (a ClickHouse storage optimization). This is conservative: it stays off for small samples and high-distinct columns.
 
 If the same field appears as `Int64` in one record and `Float64` (or `UInt64`) in another, it widens to `Float64`. Any other type conflict widens to `String`.

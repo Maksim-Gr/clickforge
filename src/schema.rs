@@ -140,10 +140,10 @@ pub fn validate_kafka_field(name: &str) -> Result<(), String> {
 }
 
 /// Quotes a ClickHouse identifier (column or table name), escaping embedded
-/// backticks by doubling them so names derived from arbitrary JSON keys can't
+/// backslashes and doubling backticks so names derived from arbitrary JSON keys can't
 /// break out of the identifier or (worse) inject SQL.
 pub fn quote_ident(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
+    format!("`{}`", name.replace('\\', "\\\\").replace('`', "``"))
 }
 
 /// Quotes a `database.table` qualified identifier, quoting each part independently.
@@ -152,9 +152,9 @@ pub fn quote_qualified(database: &str, table: &str) -> String {
 }
 
 /// Escapes a value for embedding inside a single-quoted ClickHouse string literal
-/// (distinct from `quote_ident`: this doubles single quotes, not backticks).
+/// by escaping backslashes and doubling single quotes.
 pub fn quote_string_literal(value: &str) -> String {
-    value.replace('\'', "''")
+    value.replace('\\', "\\\\").replace('\'', "''")
 }
 
 #[cfg(test)]
@@ -197,5 +197,15 @@ mod tests {
     #[test]
     fn quote_string_literal_escapes_single_quote() {
         assert_eq!(quote_string_literal("it's"), "it''s");
+    }
+
+    #[test]
+    fn quote_ident_preserves_backslashes_and_backticks() {
+        assert_eq!(quote_ident("a\\b\\`c\\"), "`a\\\\b\\\\``c\\\\`");
+    }
+
+    #[test]
+    fn quote_string_literal_preserves_backslashes_and_quotes() {
+        assert_eq!(quote_string_literal("a\\b\\'c\\"), "a\\\\b\\\\''c\\\\");
     }
 }
