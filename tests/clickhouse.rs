@@ -99,11 +99,14 @@ fn iso_timestamps_survive_materialized_view_ingestion() {
     let missing = json!({"required": timestamp});
     let mut invalid = first.clone();
     invalid["optional"] = json!("invalid");
-    let rows = pipeline_rows(
+    let mut rows = pipeline_rows(
         &json!([first, second, missing]),
         &[first.clone(), second, missing, invalid],
         "events",
     );
+    assert_eq!(rows.len(), 4);
+    // ClickHouse may return rows in any order without ORDER BY.
+    rows.sort_by_key(|row| row["optional"].is_null());
     for row in &rows {
         assert_eq!(row["required"], "2024-03-01 12:34:56.123");
     }
