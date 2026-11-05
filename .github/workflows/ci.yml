@@ -27,3 +27,8 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Test generated SQL in ClickHouse
+        run: |
+          docker pull clickhouse/clickhouse-server:26.3
+          cargo test --locked --test clickhouse -- --ignored

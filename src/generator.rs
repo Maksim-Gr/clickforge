@@ -1,6 +1,6 @@
 use crate::schema::{
-    ColumnType, EngineConfig, InferredSchema, Migration, TableEngine, quote_ident, quote_qualified,
-    quote_string_literal,
+    Column, ColumnType, EngineConfig, InferredSchema, Migration, TableEngine, quote_ident,
+    quote_qualified, quote_string_literal,
 };
 
 /// The Kafka pipeline migration for `schema`'s table.
@@ -151,14 +151,7 @@ impl<'a> Generator<'a> {
             .schema
             .columns
             .iter()
-            .map(|col| {
-                format!(
-                    "\t\tJSONExtract(message, '{}', '{}') AS {},\n",
-                    quote_string_literal(&col.name),
-                    col.ch_type_str(),
-                    quote_ident(&col.name)
-                )
-            })
+            .map(|col| format!("\t\t{} AS {},\n", json_extract(col), quote_ident(&col.name)))
             .collect();
         format!(
             "CREATE MATERIALIZED VIEW IF NOT EXISTS {mv_name}\n\
@@ -169,7 +162,7 @@ impl<'a> Generator<'a> {
              \t\t`_timestamp_ms`,\n\
              \t\t`_topic`,\n\
              \t\t`_row_created`\n\
-             \tFROM {raw_t}\n\
+             \tFROM {raw_t} AS source\n\
              ) SETTINGS cast_keep_nullable = 1;"
         )
     }
@@ -202,6 +195,59 @@ impl<'a> Generator<'a> {
              \tnowInBlock() AS _row_created\n\
              FROM {streams_t};"
         )
+    }
+}
+
+// JSONExtract's default datetime reader does not accept ISO timestamps. Extract
+// them as strings, including inside collections, then parse explicitly.
+fn json_string_type(ch_type: &ColumnType) -> ColumnType {
+    match ch_type {
+        ColumnType::DateTime64 => ColumnType::String,
+        ColumnType::Array(inner) => ColumnType::Array(Box::new(json_string_type(inner))),
+        ColumnType::Map(key, value) => {
+            ColumnType::Map(key.clone(), Box::new(json_string_type(value)))
+        }
+        other => other.clone(),
+    }
+}
+
+fn parse_json_timestamps(
+    ch_type: &ColumnType,
+    nullable: bool,
+    value: String,
+    depth: usize,
+) -> String {
+    match ch_type {
+        ColumnType::DateTime64 => {
+            let suffix = if nullable { "OrNull" } else { "" };
+            format!("parseDateTime64BestEffort{suffix}({value}, 3)")
+        }
+        ColumnType::Array(inner) => {
+            let item = format!("value_{depth}");
+            let parsed = parse_json_timestamps(inner, false, item.clone(), depth + 1);
+            format!("arrayMap({item} -> {parsed}, {value})")
+        }
+        ColumnType::Map(_, inner) => {
+            let item = format!("value_{depth}");
+            let key = format!("key_{depth}");
+            let parsed = parse_json_timestamps(inner, false, item.clone(), depth + 1);
+            format!("mapApply(({key}, {item}) -> ({key}, {parsed}), {value})")
+        }
+        _ => value,
+    }
+}
+
+fn json_extract(col: &Column) -> String {
+    let string_type = json_string_type(&col.ch_type);
+    let expression = format!(
+        "JSONExtract(source.message, '{}', '{}')",
+        quote_string_literal(&col.name),
+        string_type.as_ch_str_with(col.nullable, col.low_cardinality),
+    );
+    if string_type == col.ch_type {
+        expression
+    } else {
+        parse_json_timestamps(&col.ch_type, col.nullable, expression, 0)
     }
 }
 
@@ -343,6 +389,52 @@ mod tests {
     }
 
     #[test]
+    fn kafka_mv_parses_required_iso_timestamps() {
+        let schema =
+            crate::inference::infer_schema(r#"{"time":"2024-03-01T12:34:56.123Z"}"#, "t").unwrap();
+        let sql = kafka_raw_mv(&schema, "c".into(), "k".into());
+        assert!(sql.contains(
+            "parseDateTime64BestEffort(JSONExtract(source.message, 'time', 'String'), 3) AS `time`"
+        ));
+    }
+
+    #[test]
+    fn kafka_mv_parses_nullable_iso_timestamps() {
+        let schema = crate::inference::infer_schema(
+            r#"[{"time":"2024-03-01T12:34:56Z"},{"time":null},{}]"#,
+            "t",
+        )
+        .unwrap();
+        let sql = kafka_raw_mv(&schema, "c".into(), "k".into());
+        assert!(sql.contains("parseDateTime64BestEffortOrNull(JSONExtract(source.message, 'time', 'Nullable(String)'), 3) AS `time`"));
+    }
+
+    #[test]
+    fn kafka_mv_qualifies_message_to_avoid_alias_shadowing() {
+        let schema = crate::inference::infer_schema(
+            r#"{"message":"hello","other":42,"source":"value"}"#,
+            "t",
+        )
+        .unwrap();
+        let sql = kafka_raw_mv(&schema, "c".into(), "k".into());
+        assert!(sql.contains("JSONExtract(source.message, 'other', 'Int64') AS `other`"));
+        assert!(sql.contains("JSONExtract(source.message, 'message', 'String') AS `message`"));
+        assert!(sql.contains("FROM `raw`.`t` AS source"));
+    }
+
+    #[test]
+    fn kafka_mv_parses_timestamps_in_collections() {
+        let schema = crate::inference::infer_schema(
+            r#"{"times":[["2024-03-01T12:34:56Z"]],"by_name":{"start":"2024-03-01T12:34:56Z"}}"#,
+            "t",
+        )
+        .unwrap();
+        let sql = kafka_raw_mv(&schema, "c".into(), "k".into());
+        assert!(sql.contains("arrayMap(value_0 -> arrayMap(value_1 -> parseDateTime64BestEffort(value_1, 3), value_0), JSONExtract(source.message, 'times', 'Array(Array(String))'))"));
+        assert!(sql.contains("mapApply((key_0, value_0) -> (key_0, parseDateTime64BestEffort(value_0, 3)), JSONExtract(source.message, 'by_name', 'Map(String, String)'))"));
+    }
+
+    #[test]
     fn partition_by_emitted_for_datetime_order_key() {
         let schema = schema_with(vec![col("event_time", ColumnType::DateTime64)]);
         let config = EngineConfig {
@@ -460,7 +552,7 @@ mod tests {
         // identifier position: backtick-quoted, unescaped since no backtick in name
         assert!(sql.contains("`it's`"));
         // JSONExtract path argument: single-quote doubled inside the string literal
-        assert!(sql.contains("JSONExtract(message, 'it''s', 'String') AS `it's`"));
+        assert!(sql.contains("JSONExtract(source.message, 'it''s', 'String') AS `it's`"));
     }
 
     #[test]

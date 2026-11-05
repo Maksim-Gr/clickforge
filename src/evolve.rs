@@ -288,8 +288,8 @@ mod tests {
         let create = pos(&up, "CREATE MATERIALIZED VIEW IF NOT EXISTS `raw`.`t_mv`");
         let attach = pos(&up, "ATTACH TABLE `streams`.`t` ON CLUSTER ck;");
         assert!(alter < detach && detach < drop && drop < create && create < attach);
-        assert!(up.contains("JSONExtract(message, 'b', 'Nullable(String)') AS `b`"));
-        assert!(up.contains("JSONExtract(message, 'a', 'Float64') AS `a`"));
+        assert!(up.contains("JSONExtract(source.message, 'b', 'Nullable(String)') AS `b`"));
+        assert!(up.contains("JSONExtract(source.message, 'a', 'Float64') AS `a`"));
     }
 
     #[test]
@@ -305,7 +305,7 @@ mod tests {
             !down.contains("'b'"),
             "old view must not extract `b`:\n{down}"
         );
-        assert!(down.contains("JSONExtract(message, 'a', 'Int64') AS `a`"));
+        assert!(down.contains("JSONExtract(source.message, 'a', 'Int64') AS `a`"));
     }
 
     #[test]
@@ -343,7 +343,10 @@ mod tests {
             "new view must not extract `b`:\n{}",
             m.up
         );
-        assert!(m.down.contains("JSONExtract(message, 'b', 'Int64') AS `b`"));
+        assert!(
+            m.down
+                .contains("JSONExtract(source.message, 'b', 'Int64') AS `b`")
+        );
     }
 
     #[test]
@@ -357,7 +360,7 @@ mod tests {
         let up = migration(&old, &new).unwrap().up;
         assert!(up.contains("MODIFY COLUMN `b` Float64;"), "{up}");
         assert!(!up.contains("ADD COLUMN"), "{up}");
-        assert!(up.contains("JSONExtract(message, 'b', 'Float64') AS `b`"));
+        assert!(up.contains("JSONExtract(source.message, 'b', 'Float64') AS `b`"));
     }
 
     #[test]
