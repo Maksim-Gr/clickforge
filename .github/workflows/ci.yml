@@ -5,9 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
+  lint:
+    name: Format and Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -16,19 +25,58 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Format
         run: cargo fmt --check
 
-      - name: Build
-        run: cargo build
-
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
+
+  clickhouse:
+    name: ClickHouse integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Pull ClickHouse image
+        run: docker pull clickhouse/clickhouse-server:26.3
 
       - name: Test generated SQL in ClickHouse
-        run: |
-          docker pull clickhouse/clickhouse-server:26.3
-          cargo test --locked --test clickhouse -- --ignored
+        run: cargo test --locked --test clickhouse -- --ignored
+
+  # Keep the existing required check name as a gate for all CI jobs.
+  check:
+    if: ${{ always() }}
+    needs: [lint, test, clickhouse]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all checks to pass
+        if: ${{ needs.lint.result != 'success' || needs.test.result != 'success' || needs.clickhouse.result != 'success' }}
+        run: exit 1
